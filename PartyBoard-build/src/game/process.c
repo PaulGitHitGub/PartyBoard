@@ -1,0 +1,793 @@
+#include "port/determinism.h"
+#include "game/process.h"
+#include "dolphin/os.h"
+#include "game/memory.h"
+
+#ifdef TARGET_PC
+#include <string.h>
+#include "port/coroutine_stack.h"
+#include "port/crash_report.h"
+#endif
+
+#ifdef __MWERKS__
+#include "game/jmp.h"
+#endif
+
+#define FAKE_RETADDR 0xA5A5A5A5
+
+#define EXEC_NORMAL 0
+#define EXEC_SLEEP 1
+#define EXEC_CHILDWATCH 2
+#define EXEC_KILLED 3
+
+#ifdef TARGET_PC
+static cothread_t processthread;
+static u8 thread_arg;
+static u64 processTopologyGeneration;
+
+#define HU_PRC_SNAPSHOT_MAGIC 0x50524353u /* "PRCS" */
+#define HU_PRC_SNAPSHOT_VERSION 2u
+
+typedef struct HuPrcSnapshotHeader {
+    u32 magic;
+    u32 version;
+    u32 process_count;
+    u32 total_size;
+    u64 topology_generation;
+    uintptr_t process_top;
+    uintptr_t process_current;
+    u16 scheduler_process_count;
+    u8 scheduler_thread_arg;
+    u8 reserved;
+} HuPrcSnapshotHeader;
+
+typedef struct HuPrcSnapshotEntry {
+    uintptr_t process;
+    uintptr_t thread;
+    u32 thread_size;
+    u32 reserved;
+} HuPrcSnapshotEntry;
+#else
+static jmp_buf processjmpbuf;
+#endif
+static Process *processtop;
+static Process *processcur;
+static u16 processcnt;
+u32 procfunc;
+
+void HuPrcInit(void)
+{
+    processcnt = 0;
+    processtop = NULL;
+#ifdef TARGET_PC
+    ++processTopologyGeneration;
+#endif
+}
+
+static void LinkProcess(Process **root, Process *process)
+{
+    Process *src_process = *root;
+
+    if (src_process && (src_process->prio >= process->prio)) {
+        while (src_process->next && src_process->next->prio >= process->prio) {
+            src_process = src_process->next;
+        }
+
+        process->next = src_process->next;
+        process->prev = src_process;
+        src_process->next = process;
+        if (process->next) {
+            process->next->prev = process;
+        }
+    }
+    else {
+        process->next = (*root);
+        process->prev = NULL;
+        *root = process;
+        if (src_process) {
+            src_process->prev = process;
+        }
+    }
+}
+static void UnlinkProcess(Process **root, Process *process)
+{
+    if (process->next) {
+        process->next->prev = process->prev;
+    }
+    if (process->prev) {
+        process->prev->next = process->next;
+    }
+    else {
+        *root = process->next;
+    }
+}
+
+Process *HuPrcCreate(void (*func)(void), u16 prio, u32 stack_size, s32 extra_size)
+{
+    Process *process;
+    size_t alloc_size;
+    void *heap;
+    if (stack_size == 0) {
+        stack_size = 2048;
+    }
+#ifdef TARGET_PC
+    /* The sizes above are PowerPC constants, and they do not predict what the
+     * same code needs as x86-64 at /Od. Measured peaks over a full Big Boo
+     * session, with the original constant on the left:
+     *
+     *     2048 -> 280      4096 -> 8200     8192 -> 6552
+     *    14336 -> 6696    16384 -> 6312    24576 -> 8552
+     *
+     * The requirement is a property of the call chain, near 8.5 KB at its
+     * deepest, and is almost unrelated to the constant. Doubling therefore gave
+     * the 4096 processes 8192 bytes for a need of 8200: the Big Boo event
+     * process fn_1_30A4 (src/REL/w04Dll/boo_event.c:343) overflowed by exactly
+     * eight bytes, the return address of one call, and took the session with it
+     * every time.
+     *
+     * So a multiplier alone is the wrong model. The floor is what makes this
+     * safe: every coroutine gets at least 32 KB, which is 3.8 times the deepest
+     * depth ever measured, and the multiplier is kept so the relative ordering
+     * the original constants express still means something. A coroutine stack
+     * costs address space, not committed pages beyond what it touches, and the
+     * failure it prevents is silent and fatal. */
+    stack_size *= 4;
+    if (stack_size < 32768) {
+        stack_size = 32768;
+    }
+    alloc_size = HuMemMemoryAllocSizeGet(sizeof(Process)) + HuMemMemoryAllocSizeGet(extra_size);
+#else
+    alloc_size = HuMemMemoryAllocSizeGet(sizeof(Process)) + HuMemMemoryAllocSizeGet(stack_size) + HuMemMemoryAllocSizeGet(extra_size);
+#endif
+    if (!(heap = HuMemDirectMalloc(HEAP_SYSTEM, alloc_size))) {
+        OSReport("process> malloc error size %d\n", alloc_size);
+        return NULL;
+    }
+    HuMemHeapInit(heap, alloc_size);
+    process = HuMemMemoryAlloc(heap, sizeof(Process), FAKE_RETADDR);
+    process->heap = heap;
+    process->exec = EXEC_NORMAL;
+    process->stat = 0;
+    process->prio = prio;
+    process->sleep_time = 0;
+#ifdef TARGET_PC
+    process->thread = co_create(stack_size, func);
+    process->thread_size = stack_size;
+    // The stack libco just allocated is guarded and measurable; tell the meter
+    // which process owns it so a guard-page fault can name the culprit and the
+    // peak depth can be attributed. See include/port/coroutine_stack.h.
+    PartyBoard_CoroutineStackArm(process->thread, stack_size, (const void *)func);
+    PartyBoard_CrashBreadcrumb(PARTYBOARD_CRASH_CAT_PROCESS,
+        "create prio=%u stack=%u(game %u) thread=%p", prio, stack_size, stack_size / 2,
+        process->thread);
+#else
+    process->base_sp = ((uintptr_t)HuMemMemoryAlloc(heap, stack_size, FAKE_RETADDR)) + stack_size - 8;
+    gcsetjmp(&process->jump);
+    process->jump.lr = (u32)func;
+    process->jump.sp = process->base_sp;
+#endif
+    process->dtor = NULL;
+    process->user_data = NULL;
+    LinkProcess(&processtop, process);
+    process->child = NULL;
+    process->parent = NULL;
+#ifdef TARGET_PC
+    /* Never set here in the original (HuPrcChildLink sets them), yet hashed
+       for online play and read by HuPrcChildUnlink: start them empty.
+       determinism: a top-level process kept whatever its heap block held (a Mac and a PC
+       disagreed at frame 0); log when that was not already NULL. */
+    if (process->next_child != NULL || process->first_child != NULL) {
+        PartyBoard_DeterminismNote(__FILE__, __LINE__, "HuPrcCreate: next_child/first_child held leftover heap data, cleared", 0);
+    }
+    process->next_child = NULL;
+    process->first_child = NULL;
+#endif
+    processcnt++;
+#ifdef TARGET_PC
+    ++processTopologyGeneration;
+#endif
+    return process;
+}
+
+void HuPrcChildLink(Process *parent, Process *child)
+{
+    HuPrcChildUnlink(child);
+    if (parent->child) {
+        parent->child->first_child = child;
+    }
+    child->next_child = parent->child;
+    child->first_child = NULL;
+    parent->child = child;
+    child->parent = parent;
+}
+
+void HuPrcChildUnlink(Process *process)
+{
+    if (process->parent) {
+        if (process->next_child) {
+            process->next_child->first_child = process->first_child;
+        }
+        if (process->first_child) {
+            process->first_child->next_child = process->next_child;
+        }
+        else {
+            process->parent->child = process->next_child;
+        }
+        process->parent = NULL;
+    }
+}
+
+Process *HuPrcChildCreate(void (*func)(void), u16 prio, u32 stack_size, s32 extra_size, Process *parent)
+{
+    Process *child = HuPrcCreate(func, prio, stack_size, extra_size);
+    HuPrcChildLink(parent, child);
+    return child;
+}
+
+void HuPrcChildWatch()
+{
+    Process *curr = HuPrcCurrentGet();
+    if (curr->child) {
+        curr->exec = EXEC_CHILDWATCH;
+
+#ifdef TARGET_PC
+        thread_arg = 1;
+        co_switch(processthread);
+#else
+        if (gcsetjmp(&curr->jump) == 0)
+        {
+            gclongjmp(&processjmpbuf, 1);
+        }
+#endif
+    }
+}
+
+Process *HuPrcCurrentGet()
+{
+    return processcur;
+}
+
+static s32 SetKillStatusProcess(Process *process)
+{
+    if (process->exec != EXEC_KILLED) {
+        HuPrcWakeup(process);
+        process->exec = EXEC_KILLED;
+        return 0;
+    }
+    else {
+        return -1;
+    }
+}
+
+s32 HuPrcKill(Process *process)
+{
+    if (process == NULL) {
+        process = HuPrcCurrentGet();
+    }
+    HuPrcChildKill(process);
+    HuPrcChildUnlink(process);
+    return SetKillStatusProcess(process);
+}
+
+void HuPrcChildKill(Process *process)
+{
+    Process *child = process->child;
+    while (child) {
+        if (child->child) {
+            HuPrcChildKill(child);
+        }
+        SetKillStatusProcess(child);
+        child = child->next_child;
+    }
+    process->child = NULL;
+}
+
+static void gcTerminateProcess(Process *process)
+{
+    if (process->dtor) {
+        process->dtor();
+    }
+    UnlinkProcess(&processtop, process);
+    processcnt--;
+#ifdef TARGET_PC
+    ++processTopologyGeneration;
+    thread_arg = 2;
+    co_switch(processthread);
+#else
+    gclongjmp(&processjmpbuf, 2);
+#endif
+}
+
+void HuPrcEnd()
+{
+    Process *process = HuPrcCurrentGet();
+    HuPrcChildKill(process);
+    HuPrcChildUnlink(process);
+    gcTerminateProcess(process);
+}
+
+void HuPrcSleep(s32 time)
+{
+    Process *process = HuPrcCurrentGet();
+    if (time != 0 && process->exec != EXEC_KILLED) {
+        process->exec = EXEC_SLEEP;
+        process->sleep_time = time;
+    }
+#ifdef TARGET_PC
+    thread_arg = 1;
+    co_switch(processthread);
+#else
+    if (gcsetjmp(&process->jump) == 0) {
+        gclongjmp(&processjmpbuf, 1);
+    }
+#endif
+}
+
+void HuPrcVSleep()
+{
+    HuPrcSleep(0);
+}
+
+void HuPrcWakeup(Process *process)
+{
+    process->sleep_time = 0;
+}
+
+void HuPrcDestructorSet2(Process *process, void (*func)(void))
+{
+    process->dtor = func;
+}
+
+void HuPrcDestructorSet(void (*func)(void))
+{
+    Process *process = HuPrcCurrentGet();
+    process->dtor = func;
+}
+
+#ifdef TARGET_PC
+extern void HuARIntegrityCheck(const char *where);
+#endif
+void HuPrcCall(s32 tick)
+{
+#ifdef TARGET_PC
+    HuARIntegrityCheck("start of frame");
+#endif
+    Process *process;
+    s32 ret;
+    processcur = processtop;
+#ifdef TARGET_PC
+    thread_arg = ret = 0;
+    processthread = co_active();
+    while (1) {
+        ret = thread_arg;
+        switch (ret) {
+            case 2:
+                // Fold this stack's high-water mark into the worst case for its
+                // process before libco hands the memory back.
+                PartyBoard_CrashBreadcrumb(PARTYBOARD_CRASH_CAT_PROCESS,
+                    "destroy thread=%p peak=%u of %u", processcur->thread,
+                    PartyBoard_CoroutineStackPeak(processcur->thread, processcur->thread_size),
+                    processcur->thread_size);
+                co_delete(processcur->thread);
+#else
+    ret = gcsetjmp(&processjmpbuf);
+    while (1) {
+        switch (ret) {
+            case 2:
+#endif
+                HuMemDirectFree(processcur->heap);
+            case 1:
+                #ifdef NON_MATCHING
+                // avoid dereferencing NULL
+                if (!processcur) {
+                    break;
+                }
+                #endif
+#ifdef SKIP_HU_ALLOC
+                processcur = processcur->next;
+#else
+                // memory_block->magic
+                if (((u8 *)(processcur->heap))[4] != 165) {
+#ifdef TARGET_PC
+                    printf("stack overlap error.(process pointer %p)\n", processcur);
+#else
+                    printf("stack overlap error.(process pointer %x)\n", processcur);
+#endif
+                    while (1)
+                        ;
+                }
+                else {
+                    processcur = processcur->next;
+                }
+#endif
+                break;
+        }
+        process = processcur;
+        if (!process) {
+            return;
+        }
+#ifdef __MWERKS__
+        // unused
+        procfunc = process->jump.lr;
+#endif
+        if ((process->stat & (PROCESS_STAT_PAUSE | PROCESS_STAT_UPAUSE)) && process->exec != EXEC_KILLED) {
+#ifdef TARGET_PC
+            thread_arg = 1;
+#endif
+            ret = 1;
+            continue;
+        }
+        switch (process->exec) {
+            case EXEC_SLEEP:
+                if (process->sleep_time > 0) {
+                    process->sleep_time -= tick;
+                    if (process->sleep_time <= 0) {
+                        process->sleep_time = 0;
+                        process->exec = EXEC_NORMAL;
+                    }
+                }
+#ifdef TARGET_PC
+                thread_arg = 1;
+#endif
+                ret = 1;
+                break;
+
+            case EXEC_CHILDWATCH:
+                if (process->child) {
+#ifdef TARGET_PC
+                    thread_arg = 1;
+#endif
+                    ret = 1;
+                }
+                else {
+                    process->exec = EXEC_NORMAL;
+#ifdef TARGET_PC
+                    thread_arg = 0;
+#endif
+                    ret = 0;
+                }
+                break;
+
+            case EXEC_KILLED:
+#ifdef TARGET_PC
+                HuPrcEnd();
+                break;
+#else
+                process->jump.lr = (u32)HuPrcEnd;
+#endif
+            case EXEC_NORMAL:
+#ifdef TARGET_PC
+                co_switch(process->thread);
+#else
+                gclongjmp(&process->jump, 1);
+#endif
+                break;
+        }
+    }
+}
+
+#ifdef TARGET_PC
+size_t HuPrcSnapshotSizeGet(void)
+{
+    size_t size = sizeof(HuPrcSnapshotHeader);
+    Process *process = processtop;
+    Process *previous = NULL;
+    u32 count = 0;
+
+    if (!co_serializable()) {
+        return 0;
+    }
+    while (process != NULL) {
+        if (++count > processcnt || process->prev != previous
+            || process->thread == NULL || process->thread_size == 0
+            || size > UINT32_MAX - sizeof(HuPrcSnapshotEntry)
+            || process->thread_size > UINT32_MAX - size - sizeof(HuPrcSnapshotEntry)) {
+            return 0;
+        }
+        size += sizeof(HuPrcSnapshotEntry) + process->thread_size;
+        previous = process;
+        process = process->next;
+    }
+    return count == processcnt ? size : 0;
+}
+
+BOOL HuPrcSnapshotSave(void *destination, size_t capacity)
+{
+    HuPrcSnapshotHeader *header;
+    u8 *cursor;
+    Process *process;
+    size_t required = HuPrcSnapshotSizeGet();
+    u32 count = 0;
+
+    if (destination == NULL || required == 0 || capacity < required) {
+        return FALSE;
+    }
+    header = (HuPrcSnapshotHeader *)destination;
+    cursor = (u8 *)destination + sizeof(*header);
+    process = processtop;
+    while (process != NULL) {
+        HuPrcSnapshotEntry entry;
+        entry.process = (uintptr_t)process;
+        entry.thread = (uintptr_t)process->thread;
+        entry.thread_size = process->thread_size;
+        entry.reserved = 0;
+        memcpy(cursor, &entry, sizeof(entry));
+        cursor += sizeof(entry);
+        memcpy(cursor, process->thread, process->thread_size);
+        cursor += process->thread_size;
+        ++count;
+        process = process->next;
+    }
+    header->magic = HU_PRC_SNAPSHOT_MAGIC;
+    header->version = HU_PRC_SNAPSHOT_VERSION;
+    header->process_count = count;
+    header->total_size = (u32)required;
+    header->topology_generation = processTopologyGeneration;
+    header->process_top = (uintptr_t)processtop;
+    header->process_current = (uintptr_t)processcur;
+    header->scheduler_process_count = processcnt;
+    header->scheduler_thread_arg = thread_arg;
+    header->reserved = 0;
+    return TRUE;
+}
+
+BOOL HuPrcSnapshotLoad(const void *source, size_t size)
+{
+    HuPrcSnapshotHeader savedHeader;
+    const HuPrcSnapshotHeader *header = &savedHeader;
+    const u8 *cursor;
+    const u8 *end;
+    Process *process;
+    BOOL currentFound;
+    u32 index;
+
+    if (source == NULL || size < sizeof(HuPrcSnapshotHeader) || !co_serializable()) {
+        return FALSE;
+    }
+    memcpy(&savedHeader, source, sizeof(savedHeader));
+    if (header->magic != HU_PRC_SNAPSHOT_MAGIC
+        || header->version != HU_PRC_SNAPSHOT_VERSION
+        || header->total_size != size || header->reserved != 0
+        || header->topology_generation != processTopologyGeneration
+        || header->scheduler_thread_arg > 2
+        || header->process_count != processcnt
+        || header->scheduler_process_count != processcnt
+        || header->process_top != (uintptr_t)processtop
+        || HuPrcSnapshotSizeGet() != size) {
+        return FALSE;
+    }
+    // Validate every entry against the live list before writing any stack.
+    // Snapshot pointers are identifiers, never addresses to dereference.
+    process = processtop;
+    currentFound = header->process_current == 0;
+    cursor = (const u8 *)source + sizeof(*header);
+    end = (const u8 *)source + size;
+    for (index = 0; index < header->process_count; ++index) {
+        HuPrcSnapshotEntry entry;
+        if ((size_t)(end - cursor) < sizeof(entry)) {
+            return FALSE;
+        }
+        memcpy(&entry, cursor, sizeof(entry));
+        cursor += sizeof(entry);
+        if (process == NULL || entry.process != (uintptr_t)process || entry.reserved != 0
+            || entry.thread == 0 || entry.thread_size == 0
+            || (size_t)(end - cursor) < entry.thread_size) {
+            return FALSE;
+        }
+        if ((uintptr_t)process->thread != entry.thread
+            || process->thread_size != entry.thread_size
+            || process->thread == co_active()) {
+            // Prediction must stop BEFORE a coroutine lifetime change. Merely
+            // switching to lockstep after an invalidated prediction cannot
+            // reconstruct its lost stack or repair the simulated game state.
+            return FALSE;
+        }
+        // The source must remain immutable throughout the second pass.
+        if ((entry.thread >= (uintptr_t)source
+                && entry.thread - (uintptr_t)source < size)
+            || ((uintptr_t)source > entry.thread
+                && (uintptr_t)source - entry.thread < entry.thread_size)) {
+            return FALSE;
+        }
+        if (header->process_current == entry.process) {
+            currentFound = TRUE;
+        }
+        cursor += entry.thread_size;
+        process = process->next;
+    }
+    if (cursor != end || process != NULL || !currentFound) {
+        return FALSE;
+    }
+    cursor = (const u8 *)source + sizeof(*header);
+    for (index = 0; index < header->process_count; ++index) {
+        HuPrcSnapshotEntry entry;
+        memcpy(&entry, cursor, sizeof(entry));
+        cursor += sizeof(entry);
+        memcpy((void *)entry.thread, cursor, entry.thread_size);
+        cursor += entry.thread_size;
+    }
+    processtop = (Process *)header->process_top;
+    processcur = (Process *)header->process_current;
+    processcnt = header->scheduler_process_count;
+    thread_arg = header->scheduler_thread_arg;
+    processthread = co_active();
+    return TRUE;
+}
+
+u64 HuPrcTopologyGenerationGet(void)
+{
+    return processTopologyGeneration;
+}
+
+BOOL HuPrcSnapshotTopologySelfTest(void)
+{
+    HuPrcSnapshotHeader oldSnapshot;
+    HuPrcSnapshotHeader newSnapshot;
+    const u64 oldGeneration = processTopologyGeneration;
+
+    /* This test deliberately advances the generation. Never reset or disturb
+     * a live scheduler merely to exercise stale-snapshot rejection. */
+    if (processtop != NULL || processcur != NULL || processcnt != 0
+        || HuPrcSnapshotSizeGet() != sizeof(HuPrcSnapshotHeader)
+        || !HuPrcSnapshotSave(&oldSnapshot, sizeof(oldSnapshot))) {
+        return FALSE;
+    }
+    HuPrcInit();
+    if (processTopologyGeneration != oldGeneration + 1
+        || HuPrcSnapshotLoad(&oldSnapshot, sizeof(oldSnapshot))
+        || processtop != NULL || processcur != NULL || processcnt != 0
+        || processTopologyGeneration != oldGeneration + 1) {
+        return FALSE;
+    }
+    return HuPrcSnapshotSave(&newSnapshot, sizeof(newSnapshot))
+        && HuPrcSnapshotLoad(&newSnapshot, sizeof(newSnapshot));
+}
+#endif
+
+void *HuPrcMemAlloc(s32 size)
+{
+    Process *process = HuPrcCurrentGet();
+    return HuMemMemoryAlloc(process->heap, size, FAKE_RETADDR);
+}
+
+void HuPrcMemFree(void *ptr)
+{
+    HuMemMemoryFree(ptr, FAKE_RETADDR);
+}
+
+void HuPrcSetStat(Process *process, u16 value)
+{
+    process->stat |= value;
+}
+
+void HuPrcResetStat(Process *process, u16 value)
+{
+    process->stat &= ~value;
+}
+
+void HuPrcAllPause(s32 flag)
+{
+    Process *process = processtop;
+    if (flag) {
+        while (process != NULL) {
+            if (!(process->stat & PROCESS_STAT_PAUSE_EN)) {
+                HuPrcSetStat(process, PROCESS_STAT_PAUSE);
+            }
+
+            process = process->next;
+        }
+    }
+    else {
+        while (process != NULL) {
+            if (process->stat & PROCESS_STAT_PAUSE) {
+                HuPrcResetStat(process, PROCESS_STAT_PAUSE);
+            }
+
+            process = process->next;
+        }
+    }
+}
+
+void HuPrcAllUPause(s32 flag)
+{
+    Process *process = processtop;
+    if (flag) {
+        while (process != NULL) {
+            if (!(process->stat & PROCESS_STAT_UPAUSE_EN)) {
+                HuPrcSetStat(process, PROCESS_STAT_UPAUSE);
+            }
+
+            process = process->next;
+        }
+    }
+    else {
+        while (process != NULL) {
+            if (process->stat & PROCESS_STAT_UPAUSE) {
+                HuPrcResetStat(process, PROCESS_STAT_UPAUSE);
+            }
+
+            process = process->next;
+        }
+    }
+}
+
+#include "process_snapshot_test.inc"
+
+#ifdef TARGET_PC
+#include "port/netplay_state.h"
+
+/* Read-only head of the scheduler list, for canonical exporters that need to
+ * find a specific process without keeping a second registry of their own. */
+Process *PartyBoard_PrcListHead(void)
+{
+    return processtop;
+}
+
+/* Canonical index of a process in the scheduler list, or -1. Addresses differ
+ * legitimately between two machines; the position in the list does not. */
+static s32 HuPrcCanonicalIndex(const Process *target)
+{
+    Process *process;
+    s32 index = 0;
+    if (target == NULL) {
+        return -1;
+    }
+    for (process = processtop; process != NULL; process = process->next, ++index) {
+        if (process == target) {
+            return index;
+        }
+    }
+    return -2; /* Reachable only from a corrupt or foreign descriptor. */
+}
+
+void PartyBoard_NetplayProcessState(PartyBoardNetplayStateSink sink, void *context)
+{
+    Process *process;
+    s32 index = 0;
+#define WORD(value) sink(context, #value, (uint32_t)(value))
+    WORD(processcnt);
+    WORD(thread_arg);
+    WORD(HuPrcCanonicalIndex(processcur));
+    for (process = processtop; process != NULL; process = process->next, ++index) {
+        WORD(index);
+        WORD(process->exec);
+        WORD(process->stat);
+        WORD(process->prio);
+        WORD(process->sleep_time);
+        WORD(process->thread_size);
+        WORD(HuPrcCanonicalIndex(process->parent));
+        WORD(HuPrcCanonicalIndex(process->child));
+        WORD(HuPrcCanonicalIndex(process->next_child));
+        WORD(HuPrcCanonicalIndex(process->first_child));
+        /* Pointers are never hashed; only whether the slot is populated. */
+        WORD(process->dtor != NULL);
+        WORD(process->user_data != NULL);
+        WORD(process->heap != NULL);
+        if (index > 4096) {
+            break; /* Corrupt list: stop instead of walking forever. */
+        }
+    }
+    WORD(index);
+#undef WORD
+}
+#endif
+
+#ifdef TARGET_PC
+#include "port/rollback_scene.h"
+bool PartyBoard_RollbackProcessRegions(PartyBoardRollbackRegionSink sink, void *context)
+{
+    Process *process;
+    if (!sink || processcur || !HuPrcSnapshotSizeGet()
+        || (processthread && processthread != co_active())) return false;
+    for (process = processtop; process; process = process->next) {
+        if (process->thread == co_active()
+            || !sink(context, process->thread, process->thread_size)) return false;
+    }
+    /* Descriptors and their subheaps are already inside the SYSTEM arena.
+     * Never rewind the monotonic lifetime counter or the active scheduler stack. */
+#define REGION(value) if (!sink(context, &(value), sizeof(value))) return false;
+    REGION(processtop) REGION(processcur) REGION(processcnt) REGION(thread_arg)
+#undef REGION
+    return true;
+}
+#endif

@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="PartyPad">
+<title>PartyPad</title>
+<style>
+  :root {
+    --bg: #1b1530;
+    --panel: #2a2148;
+    --ink: #efeaff;
+    --muted: #9d93c4;
+    --a: #2fb36b;
+    --b: #e0454b;
+    --xy: #c9c3dc;
+    --start: #8f86b3;
+    --shoulder: #4a3f75;
+    --press: #ffffff;
+  }
+  * { box-sizing: border-box; margin: 0; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    height: 100%; overflow: hidden; background: var(--bg); color: var(--ink);
+    font: 600 15px/1.2 -apple-system, BlinkMacSystemFont, "SF Pro Rounded", system-ui, sans-serif;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+    touch-action: none; overscroll-behavior: none;
+  }
+  #pad {
+    position: fixed; inset: 0;
+    padding: max(10px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right))
+             max(10px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    grid-template-rows: auto 1fr;
+    gap: 6px 10px;
+  }
+  .btn {
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 999px; color: #1b1530; font-weight: 800; letter-spacing: .02em;
+    transition: transform 40ms, filter 40ms;
+    box-shadow: 0 4px 0 rgba(0,0,0,.35);
+  }
+  .btn.on { transform: translateY(3px) scale(.96); filter: brightness(1.35); box-shadow: 0 1px 0 rgba(0,0,0,.35); }
+
+  /* shoulders */
+  .shoulders { display: flex; gap: 10px; align-items: start; }
+  .shoulders.right { justify-content: flex-end; }
+  .shoulder { height: 46px; min-width: 96px; padding: 0 18px; border-radius: 14px;
+              background: var(--shoulder); color: var(--ink); }
+  .z { background: #6a4fd6; min-width: 70px; }
+
+  /* center column */
+  /* touch-action isn't inherited; set it everywhere so no element allows
+     Safari's double-tap zoom. */
+  *, *::before, *::after { touch-action: none; }
+  .top-center { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  /* Player badge, in Mario Party's player colours. Tap to switch player. */
+  #player { min-width: 104px; height: 40px; padding: 0 16px; border-radius: 20px;
+            display: flex; align-items: center; justify-content: center; gap: 6px;
+            font-size: 17px; font-weight: 800; color: #fff; background: #4a3f75;
+            box-shadow: 0 3px 0 rgba(0,0,0,.35); }
+  #player[data-p="1"] { background: #2f6fe0; }
+  #player[data-p="2"] { background: #e0454b; }
+  #player[data-p="3"] { background: #2fa860; }
+  #player[data-p="4"] { background: #e6b422; color: #2a2148; }
+  #player .swap { font-size: 13px; opacity: .8; }
+  #status { font-size: 12px; font-weight: 600; color: var(--muted); white-space: nowrap; }
+  #status.ok { color: #7ee2a8; }
+  #status.bad { color: #ff9a9e; }
+  .center { display: flex; flex-direction: column; align-items: center; justify-content: space-between; padding: 6px 0 4px; }
+  .start { width: 74px; height: 36px; background: var(--start); color: var(--ink); font-size: 12px; }
+
+  .dpad { position: relative; width: 132px; height: 132px; }
+  .dpad .btn { position: absolute; width: 46px; height: 46px; border-radius: 10px;
+               background: var(--panel); color: var(--muted); box-shadow: 0 3px 0 rgba(0,0,0,.35); }
+  .dpad .up    { left: 43px; top: 0; }
+  .dpad .down  { left: 43px; bottom: 0; }
+  .dpad .left  { left: 0; top: 43px; }
+  .dpad .right { right: 0; top: 43px; }
+  .dpad .btn.on { color: var(--ink); }
+
+  /* stick */
+  .stick-zone { position: relative; display: flex; align-items: center; justify-content: center; }
+  .stick-base { position: relative; width: min(200px, 46vh); aspect-ratio: 1; border-radius: 50%;
+                background: radial-gradient(circle, #241c40 0 55%, #31285a 56% 100%);
+                box-shadow: inset 0 0 0 3px #3b3168; }
+  .stick-knob { position: absolute; left: 50%; top: 50%; width: 42%; aspect-ratio: 1; border-radius: 50%;
+                transform: translate(-50%, -50%); background: #d9d4ea;
+                box-shadow: 0 5px 0 rgba(0,0,0,.4); }
+
+  /* face buttons, GameCube arrangement */
+  .face-zone { position: relative; display: flex; align-items: center; justify-content: center; }
+  .face { position: relative; width: min(250px, 58vh); aspect-ratio: 1.1; }
+  .face .a { position: absolute; width: 46%; aspect-ratio: 1; left: 30%; top: 30%; background: var(--a); font-size: 26px; }
+  .face .b { position: absolute; width: 25%; aspect-ratio: 1; left: 2%;  top: 66%; background: var(--b); font-size: 17px; }
+  .face .x { position: absolute; width: 22%; aspect-ratio: 1.5/1; right: 0; top: 24%; background: var(--xy); border-radius: 40%; }
+  .face .y { position: absolute; width: 34%; aspect-ratio: 2/1; left: 30%; top: 4%;  background: var(--xy); border-radius: 40%; }
+
+  #rotate { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+            text-align: center; padding: 24px; background: var(--bg); font-size: 18px; }
+  @media (orientation: portrait) { #rotate { display: flex; } }
+</style>
+</head>
+<body>
+<div id="pad">
+  <div class="shoulders"><div class="btn shoulder" data-b="64">L</div></div>
+  <div class="top-center">
+    <div class="btn" id="player" data-p="0">…</div>
+    <div id="status">Connecting…</div>
+  </div>
+  <div class="shoulders right">
+    <div class="btn shoulder z" data-b="16">Z</div>
+    <div class="btn shoulder" data-b="32">R</div>
+  </div>
+
+  <div class="stick-zone" id="stickZone">
+    <div class="stick-base" id="stickBase"><div class="stick-knob" id="knob"></div></div>
+  </div>
+
+  <div class="center">
+    <div class="btn start" data-b="4096">START</div>
+    <div class="dpad">
+      <div class="btn up" data-b="8">▲</div>
+      <div class="btn left" data-b="1">◀</div>
+      <div class="btn right" data-b="2">▶</div>
+      <div class="btn down" data-b="4">▼</div>
+    </div>
+  </div>
+
+  <div class="face-zone">
+    <div class="face">
+      <div class="btn y" data-b="2048">Y</div>
+      <div class="btn x" data-b="1024">X</div>
+      <div class="btn a" data-b="256">A</div>
+      <div class="btn b" data-b="512">B</div>
+    </div>
+  </div>
+</div>
+<div id="rotate">Turn your phone sideways to use the controller.</div>
+
+<script>
+(() => {
+  const token = new URLSearchParams(location.search).get("k") || "";
+  const statusEl = document.getElementById("status");
+  const zone = document.getElementById("stickZone");
+  const base = document.getElementById("stickBase");
+  const knob = document.getElementById("knob");
+  const buttons = [...document.querySelectorAll(".btn[data-b]")];
+
+  const pointers = new Map();   // pointerId -> {x, y}
+  let stickId = null;
+  let stick = { x: 0, y: 0 };
+  let mask = 0;
+  let lastSent = "";
+  let ws = null;
+  let gameOn = false;
+
+  function setStatus(text, cls) {
+    statusEl.textContent = text;
+    statusEl.className = cls || "";
+  }
+
+  // --- input -------------------------------------------------------------
+  function updateStick(p) {
+    const r = base.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    const radius = r.width / 2 * 0.8;
+    let dx = (p.x - cx) / radius, dy = (p.y - cy) / radius;
+    const len = Math.hypot(dx, dy);
+    if (len > 1) { dx /= len; dy /= len; }
+    const dead = 0.12;
+    const mag = Math.min(1, Math.hypot(dx, dy));
+    const scaled = mag < dead ? 0 : (mag - dead) / (1 - dead);
+    const k = mag > 0 ? scaled / mag : 0;
+    stick = { x: Math.round(dx * k * 127), y: Math.round(-dy * k * 127) };
+    knob.style.transform = `translate(calc(-50% + ${dx * radius}px), calc(-50% + ${dy * radius}px))`;
+  }
+
+  function resetStick() {
+    stick = { x: 0, y: 0 };
+    knob.style.transform = "translate(-50%, -50%)";
+  }
+
+  function recompute() {
+    let m = 0;
+    for (const [id, p] of pointers) {
+      if (id === stickId) { updateStick(p); continue; }
+      const el = document.elementFromPoint(p.x, p.y);
+      const btn = el && el.closest(".btn[data-b]");
+      if (btn) m |= Number(btn.dataset.b);
+    }
+    if (stickId === null) resetStick();
+    mask = m;
+    for (const b of buttons) b.classList.toggle("on", (m & Number(b.dataset.b)) !== 0);
+    send();
+  }
+
+  document.addEventListener("pointerdown", e => {
+    e.preventDefault();
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (stickId === null && zone.contains(e.target)) stickId = e.pointerId;
+    recompute();
+  }, { passive: false });
+  document.addEventListener("pointermove", e => {
+    if (!pointers.has(e.pointerId)) return;
+    e.preventDefault();
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    recompute();
+  }, { passive: false });
+  const release = e => {
+    pointers.delete(e.pointerId);
+    if (e.pointerId === stickId) stickId = null;
+    recompute();
+  };
+  document.addEventListener("pointerup", release);
+  document.addEventListener("pointercancel", release);
+  document.addEventListener("gesturestart", e => e.preventDefault());
+  // Safari ignores user-scalable=no; cancelling the touches themselves is
+  // what stops double-tap zoom and the long-press magnifier. Pointer events,
+  // which drive the pad, still arrive.
+  for (const type of ["touchstart", "touchend", "touchmove"]) {
+    document.addEventListener(type, e => { if (e.cancelable) e.preventDefault(); }, { passive: false });
+  }
+  document.addEventListener("dblclick", e => e.preventDefault(), { passive: false });
+  document.addEventListener("contextmenu", e => e.preventDefault());
+  // Losing the page (app switch, lock) must not leave a button held.
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) { pointers.clear(); stickId = null; recompute(); }
+  });
+
+  // --- network -----------------------------------------------------------
+  function send(force) {
+    const msg = `${mask},${stick.x},${stick.y}`;
+    if (!force && msg === lastSent) return;
+    lastSent = msg;
+    if (ws && ws.readyState === 1) ws.send(msg);
+  }
+  setInterval(() => send(true), 150);   // heartbeat: the bridge releases input after 1 s of silence
+
+  // Kept across reloads so the Mac gives this phone its player back.
+  let clientId = "";
+  try { clientId = localStorage.getItem("partypad-id") || ""; } catch (e) {}
+  if (!clientId) {
+    clientId = Math.random().toString(36).slice(2, 12);
+    try { localStorage.setItem("partypad-id", clientId); } catch (e) {}
+  }
+  let player = 0;
+  const playerEl = document.getElementById("player");
+  function showPlayer() {
+    playerEl.dataset.p = String(player);
+    playerEl.innerHTML = player ? `Player ${player} <span class="swap">⇄</span>` : "…";
+  }
+  function showStatus() {
+    if (!player) return;
+    if (gameOn) setStatus("Tap the player to switch", "ok");
+    else setStatus("Waiting for PartyBoard", "");
+  }
+  let flashTimer = 0;
+  function flash(text) {
+    setStatus(text, "bad");
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(showStatus, 1500);
+  }
+  playerEl.addEventListener("pointerup", () => {
+    if (player && ws && ws.readyState === 1) ws.send("switch");
+  });
+
+  function connect() {
+    if (!token) { setStatus("Missing code: open the link from the Mac's Terminal window", "bad"); return; }
+    ws = new WebSocket(`ws://${location.host}/ws?k=${encodeURIComponent(token)}`);
+    ws.onopen = () => { ws.send("hello:" + clientId); setStatus("Connected, waiting for PartyBoard", ""); };
+    ws.onmessage = ev => {
+      const m = ev.data;
+      if (m === "game:on") { gameOn = true; showStatus(); }
+      else if (m === "game:off") { gameOn = false; showStatus(); }
+      else if (m.startsWith("player:")) { player = Number(m.slice(7)); showPlayer(); showStatus(); send(true); }
+      else if (m === "nofree") { flash("No other player is free"); }
+      else if (m === "full") { setStatus("All four players are taken (phones or controllers)", "bad"); ws.onclose = null; }
+      else if (m === "replaced") { setStatus("This phone connected again in another tab", "bad"); ws.onclose = null; }
+    };
+    ws.onclose = () => { gameOn = false; setStatus("Disconnected · retrying…", "bad"); setTimeout(connect, 1000); };
+  }
+  connect();
+})();
+</script>
+</body>
+</html>

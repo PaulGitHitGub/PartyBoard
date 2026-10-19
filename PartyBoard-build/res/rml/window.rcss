@@ -1,0 +1,855 @@
+*, *:before, *:after {
+    box-sizing: border-box;
+}
+
+/* Settings (2026-10-18 layout pass): the original blue glass panel, cyan
+   accents and cream text, with roomier rows, plain-line settings instead of
+   boxed ones, and one short help line in the inspector. */
+body {
+    display: flex;
+    width: 100%;
+    height: 100%;
+    /* Room at the bottom for the "Menu open" notice (overlay.cpp). */
+    padding: 36dp 48dp 80dp 48dp;
+    font-family: "FOT-NewRodin Pro";
+    font-weight: normal;
+    font-style: normal;
+    font-size: 16dp;
+    color: #E0DBC8;
+}
+
+window {
+    display: flex;
+    flex-flow: column;
+    position: relative;
+    height: 100%;
+    width: 100%;
+    max-width: 1180dp;
+    max-height: 800dp;
+    margin: auto;
+    border-radius: 18dp;
+    overflow: hidden;
+    border: 2dp #009dda;
+    backdrop-filter: blur(5dp);
+    box-shadow: 0 0 25dp 5dp;
+    background-color: rgba(37, 59, 156, 90%);
+    filter: opacity(0);
+    transform: scale(0.97);
+    transform-origin: center;
+    transition: filter transform 0.18s cubic-out;
+}
+
+window.small {
+    height: auto;
+    width: auto;
+}
+
+window.modal {
+    max-width: 640dp;
+}
+
+window[open] {
+    filter: opacity(1);
+    transform: scale(1);
+}
+
+@media (max-height: 640dp) {
+    body {
+        padding: 12dp;
+    }
+}
+
+window tab-bar {
+    flex: 0 0 64dp;
+    height: 64dp;
+    padding: 0 12dp;
+    background-color: rgba(217, 217, 217, 10%);
+    font-family: "FOT-NewRodin Pro";
+    font-weight: bold;
+    font-size: 14dp;
+}
+
+window tab-bar tab {
+    opacity: 0.4;
+}
+
+window content {
+    border-top: 2dp #009dda;
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+}
+
+window content pane {
+    display: flex;
+    flex-flow: column;
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 0;
+    padding: 20dp 28dp;
+    padding-bottom: 0dp;
+    gap: 2dp;
+    overflow: hidden auto;
+    font-size: 16dp;
+}
+
+/* The list of settings, a little wider than the inspector beside it. */
+window content pane:first-of-type {
+    flex: 1.25 1 0;
+}
+
+window content pane:not(:last-of-type) {
+    border-right: 1dp #009dda;
+}
+
+window content pane > * {
+    flex: 0 0 auto;
+}
+
+/* The inspector: choices, then one muted line of help. */
+window content pane:last-of-type {
+    gap: 6dp;
+    padding-top: 28dp;
+}
+
+window content pane:last-of-type > div {
+    line-height: 1.5;
+    color: rgba(224, 219, 200, 65%);
+    font-size: 15dp;
+}
+
+/* One line of help under the choices, set apart from them. */
+window content pane:last-of-type > button + div {
+    margin-top: 10dp;
+}
+
+/* Plain text in the list (status, hints) lines up with the row labels. */
+window content pane:first-of-type > div {
+    padding-left: 16dp;
+    padding-right: 16dp;
+}
+
+window content pane > spacer {
+    display: block;
+    flex: 0 0 20dp;
+    height: 20dp;
+    pointer-events: none;
+}
+
+scrollbarvertical {
+    width: 6dp;
+    margin: 6dp 4dp 6dp 0;
+}
+
+scrollbarvertical sliderarrowdec,
+scrollbarvertical sliderarrowinc {
+    width: 0;
+    height: 0;
+}
+
+scrollbarvertical slidertrack {
+    width: 6dp;
+}
+
+scrollbarvertical sliderbar {
+    width: 6dp;
+    min-height: 24dp;
+    background-color: rgba(224, 219, 200, 45%);
+    border-radius: 3dp;
+    transition: background-color 0.2s cubic-in-out;
+}
+
+scrollbarvertical sliderbar:hover,
+scrollbarvertical sliderbar:active {
+    background-color: rgba(0, 180, 250, 80%);
+}
+
+scrollbarhorizontal {
+    height: 0;
+}
+
+scrollbarhorizontal sliderarrowdec,
+scrollbarhorizontal sliderarrowinc {
+    width: 0;
+    height: 0;
+}
+
+scrollbarhorizontal slidertrack,
+scrollbarhorizontal sliderbar {
+    width: 0;
+    height: 0;
+}
+
+.section-heading {
+    font-family: "FOT-NewRodin Pro";
+    font-weight: bold;
+    text-transform: uppercase;
+    font-size: 13dp;
+    color: rgba(224, 219, 200, 42%);
+    padding: 4dp 16dp 6dp 16dp;
+}
+
+.section-heading:not(:first-of-type) {
+    padding-top: 22dp;
+}
+
+button {
+    text-align: center;
+    background-color: rgba(17, 16, 10, 20%);
+    box-shadow: rgba(146, 135, 91, 25%) 0 0 0 1dp;
+    padding: 13dp 16dp;
+    border-radius: 12dp;
+    font-size: 16dp;
+    transition: background-color 0.12s cubic-out, color 0.12s cubic-out;
+    cursor: pointer;
+    focus: auto;
+}
+
+button:not(:disabled):hover,
+button:not(:disabled):focus-visible {
+    background-color: rgba(0, 157, 218, 20%);
+    box-shadow: #00b4fa 0 0 0 2dp;
+}
+
+button:not(:disabled):selected {
+    color: #FFFFFF;
+    background-color: rgba(0, 157, 218, 40%);
+}
+
+button:not(:disabled):active {
+    background-color: rgba(0, 157, 218, 40%);
+    box-shadow: #00b4fa 0 0 0 2dp;
+}
+
+/* Actions in the settings list read as rows, like the settings around them. */
+window content pane:first-of-type > button {
+    text-align: left;
+    background-color: transparent;
+    box-shadow: none;
+}
+
+window content pane:first-of-type > button:not(:disabled):hover,
+window content pane:first-of-type > button:not(:disabled):focus-visible {
+    background-color: rgba(0, 157, 218, 20%);
+    box-shadow: #00b4fa 0 0 0 2dp;
+}
+
+window content pane:first-of-type > button.primary {
+    text-align: center;
+    margin: 4dp 0;
+    background-color: rgba(17, 16, 10, 20%);
+    box-shadow: rgba(146, 135, 91, 25%) 0 0 0 1dp;
+}
+
+window content pane:first-of-type > button.primary:not(:disabled):hover,
+window content pane:first-of-type > button.primary:not(:disabled):focus-visible,
+window content pane:first-of-type > button.primary:not(:disabled):active {
+    background-color: rgba(0, 157, 218, 20%);
+    box-shadow: #00b4fa 0 0 0 2dp;
+}
+
+button:disabled {
+    opacity: 0.35;
+    cursor: default;
+}
+
+button.modal-btn {
+    flex: 1 1 0;
+    text-align: center;
+}
+
+/* A setting row: label on the left, current value on the right. */
+select-button {
+    display: flex;
+    align-items: center;
+    gap: 12dp;
+    min-height: 52dp;
+    padding: 13dp 16dp;
+    border-radius: 12dp;
+    transition: background-color 0.12s cubic-out;
+    cursor: pointer;
+    focus: auto;
+}
+
+select-button:not(:disabled):hover,
+select-button:not(:disabled):focus-visible {
+    background-color: rgba(0, 157, 218, 20%);
+    box-shadow: #00b4fa 0 0 0 2dp;
+}
+
+select-button:not(:disabled):selected {
+    background-color: rgba(0, 157, 218, 40%);
+}
+
+select-button:not(:disabled):active {
+    background-color: rgba(0, 157, 218, 40%);
+    box-shadow: #00b4fa 0 0 0 2dp;
+}
+
+select-button:disabled {
+    opacity: 0.35;
+    cursor: default;
+}
+
+select-button key {
+    font-family: "FOT-NewRodin Pro";
+    font-size: 16dp;
+    color: #E0DBC8;
+    flex: 1 1 auto;
+}
+
+select-button value {
+    flex: 0 1 auto;
+    text-align: right;
+    font-size: 16dp;
+    color: rgba(224, 219, 200, 60%);
+}
+
+/* Set Up Players: the bar along a player's row while someone holds L + R. */
+select-button.claim-slot {
+    position: relative;
+    padding-top: 10dp;
+    padding-bottom: 16dp;
+    box-shadow: rgba(146, 135, 91, 25%) 0 0 0 2dp;
+}
+
+select-button.claim-slot progress.claim-bar {
+    position: absolute;
+    left: 4%;
+    width: 92%;
+    bottom: 6dp;
+    height: 4dp;
+    border-radius: 2dp;
+    background-color: rgba(17, 16, 10, 45%);
+    opacity: 0;
+    transition: opacity 0.15s cubic-in-out;
+}
+
+select-button.claim-slot progress.claim-bar.active {
+    opacity: 1;
+}
+
+select-button.claim-slot progress.claim-bar fill {
+    background-color: #009dda;
+    border-radius: 2dp;
+}
+
+select-button.claim-slot progress.claim-bar.done fill {
+    background-color: #44cc55;
+}
+
+select-button value.modified {
+    color: #E0DBC8;
+    font-weight: bold;
+}
+
+select-button input {
+    text-align: right;
+    font-size: 16dp;
+}
+
+icon {
+    width: 1em;
+    height: 1em;
+    font-family: "Material Symbols Rounded";
+    font-weight: normal;
+    display: inline-block;
+    vertical-align: middle;
+}
+
+icon.warning {
+    decorator: text("&#xe002;" center center);
+}
+
+icon.error {
+    decorator: text("&#xe000;" center center);
+}
+
+icon.verifying {
+    decorator: text("&#xe8b5;" center center);
+}
+
+icon.celebration {
+    decorator: text("&#xea65;" center center);
+}
+
+icon.question-mark {
+    decorator: text("&#xeb8b;" center center);
+}
+
+/* RetroAchievements list: opaque and higher contrast, since it is read over
+   the game scene (src/port/ui/achievements.cpp). */
+window.achievements {
+    background-color: rgba(16, 26, 74, 98%);
+}
+
+window.achievements .achievement-desc {
+    color: rgba(240, 236, 222, 88%);
+    font-size: 17dp;
+}
+
+window.achievements .achievement-total {
+    color: rgba(240, 236, 222, 90%);
+    font-size: 16dp;
+}
+
+window.achievements .achievement-progress {
+    color: rgba(240, 236, 222, 80%);
+    font-size: 14dp;
+}
+
+window.achievements progress {
+    height: 10dp;
+    border-radius: 5dp;
+    background-color: rgba(255, 255, 255, 18%);
+}
+
+window.achievements progress.progress-done fill {
+    background-color: #44cc55;
+    border-radius: 5dp;
+}
+
+window.achievements progress.progress-ongoing fill {
+    background-color: #3fa9f5;
+    border-radius: 5dp;
+}
+
+.ra-summary {
+    display: flex;
+    align-items: center;
+    margin: 4dp 0 6dp 0;
+}
+
+.ra-summary-user {
+    flex: 1;
+    font-weight: bold;
+    color: rgba(240, 236, 222, 90%);
+}
+
+.ra-summary-count {
+    font-weight: bold;
+    color: #ffa826;
+}
+
+progress.ra-total {
+    height: 14dp;
+    border-radius: 7dp;
+    margin: 0 0 12dp 0;
+}
+
+progress.ra-total fill {
+    background-color: #ffa826;
+    border-radius: 7dp;
+}
+
+.achievement-total {
+    position: absolute;
+    top: 0;
+    right: 64dp;
+    height: 64dp;
+    line-height: 64dp;
+    font-family: "FOT-NewRodin Pro";
+    font-weight: bold;
+    font-size: 13dp;
+    color: rgba(224, 219, 200, 55%);
+    pointer-events: none;
+}
+
+.achievement-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10dp;
+    padding: 12dp 0;
+    border-bottom: 1dp rgba(146, 135, 91, 30%);
+}
+
+.achievement-info {
+    display: block;
+    flex: 1 1 0;
+    min-width: 0;
+}
+
+/* A RetroAchievements badge; the pictures are 64x64. */
+.achievement-icon {
+    flex: 0 0 auto;
+    width: 64dp;
+    height: 64dp;
+    margin: 2dp 4dp 0 0;
+}
+
+.achievement-icon.pending {
+    border-radius: 6dp;
+    background-color: rgba(255, 255, 255, 8%);
+}
+
+.achievement-header {
+    display: flex;
+    align-items: center;
+}
+
+.achievement-name {
+    flex: 1;
+    font-weight: bold;
+}
+
+.achievement-name.unlocked {
+    color: #ffa826;
+}
+
+.achievement-badge {
+    font-size: 14dp;
+    opacity: 0.7;
+}
+
+.achievement-badge.unlocked {
+    color: #44cc55;
+    opacity: 1;
+}
+
+.achievement-badge.locked {
+    color: #cc4444;
+    opacity: 1;
+}
+
+.achievement-desc {
+    display: block;
+    color: rgba(224, 219, 200, 55%);
+    font-size: 16dp;
+    margin: 4dp 0 0 0;
+}
+
+.achievement-progress {
+    display: block;
+    font-size: 13dp;
+    color: rgba(224, 219, 200, 45%);
+}
+
+progress {
+    display: block;
+    width: 100%;
+    height: 6dp;
+    border-radius: 3dp;
+    background-color: rgba(255, 255, 255, 10%);
+    margin: 6dp 0 2dp 0;
+}
+
+progress.progress-done fill {
+    background-color: #44aa22;
+    border-radius: 3dp;
+}
+
+progress.progress-ongoing fill {
+    background-color: #2255bb;
+    border-radius: 3dp;
+}
+
+button.achievement-clear {
+    flex: 0 0 auto;
+    align-self: center;
+    font-size: 14dp;
+    padding: 2dp 8dp;
+    opacity: 0.45;
+}
+
+.preset-grid {
+    display: flex;
+    flex-direction: row;
+    gap: 20dp;
+    flex: 0 1 auto;
+    align-items: flex-start;
+    width: 100%;
+}
+
+.preset-col {
+    display: flex;
+    flex-flow: column;
+    gap: 12dp;
+    flex: 1 1 0;
+}
+
+.preset-desc {
+    display: block;
+    font-size: 16dp;
+    text-align: center;
+}
+
+.modal-dialog {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 24dp;
+    gap: 20dp;
+    flex: 0 1 auto;
+    width: 100%;
+    text-align: left;
+}
+
+window.modal.danger {
+    border: 2dp #852221;
+}
+
+.modal-header {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    flex: 0 0 auto;
+    gap: 16dp;
+}
+
+.modal-header icon {
+    font-size: 24dp;
+    color: #009dda;
+}
+
+.modal-title {
+    display: block;
+    font-family: "FOT-NewRodin Pro";
+    font-weight: bold;
+    text-transform: uppercase;
+    font-size: 14dp;
+    color: #009dda;
+    flex: 1 1 auto;
+}
+
+window.modal.danger .modal-title,
+window.modal.danger .modal-header icon {
+    color: #B3261E;
+}
+
+.modal-body {
+    display: block;
+    width: 100%;
+    flex: 0 1 auto;
+    min-width: 0;
+    font-size: 16dp;
+    color: #FFFFFF;
+    font-weight: normal;
+}
+
+.modal-body span.tip {
+    font-size: 14dp;
+    color: #009dda;
+}
+
+.verification-progress {
+    display: flex;
+    flex-direction: column;
+    gap: 10dp;
+    width: 100%;
+}
+
+.verification-file {
+    display: block;
+    font-size: 17dp;
+    color: #FFFFFF;
+}
+
+progress.verification-progress-bar {
+    height: 8dp;
+    margin: 2dp 0 0 0;
+}
+
+.verification-detail {
+    display: block;
+    font-size: 14dp;
+    color: rgba(224, 219, 200, 65%);
+}
+
+.modal-actions {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: stretch;
+    gap: 12dp;
+    width: 100%;
+    flex: 0 0 auto;
+    padding-top: 4dp;
+}
+
+/* Settings > Input > Phone Controller: status, QR code and link for a phone
+   on the same Wi-Fi. Colours reuse the achievement states. */
+.phone-panel {
+    display: flex;
+    flex-flow: column;
+    align-items: flex-start;
+    gap: 12dp;
+}
+
+.phone-status {
+    display: flex;
+    align-items: center;
+    font-weight: bold;
+}
+
+.phone-status-dot {
+    display: block;
+    flex: 0 0 10dp;
+    width: 10dp;
+    height: 10dp;
+    margin-right: 10dp;
+    border-radius: 5dp;
+    background-color: rgba(224, 219, 200, 45%);
+}
+
+.phone-status.waiting .phone-status-dot {
+    background-color: #ffa826;
+}
+
+.phone-status.connected {
+    color: #44cc55;
+}
+
+.phone-status.connected .phone-status-dot {
+    background-color: #44cc55;
+}
+
+.phone-status.off .phone-status-dot {
+    background-color: #cc4444;
+}
+
+/* The code sits on the text cream, framed like a button. Sized to the
+   image plus padding (sizes here include the padding): the panel shrinks its
+   items to their content, and RmlUi doesn't count the image, which left only
+   a sliver of the frame showing. */
+.phone-qr {
+    width: 220dp;
+    height: 220dp;
+    flex: 0 0 auto;
+    padding: 10dp;
+    border-radius: 14dp;
+    background-color: #E0DBC8;
+    box-shadow: rgba(146, 135, 91, 25%) 0 0 0 1dp;
+}
+
+.phone-qr img {
+    display: block;
+    width: 200dp;
+    height: 200dp;
+}
+
+.phone-link {
+    font-weight: bold;
+    color: #00b4fa;
+}
+
+.phone-help {
+    color: rgba(224, 219, 200, 55%);
+}
+
+/* Play Online (Tailscale): found games, lobby seats and status. */
+.online-panel {
+    display: flex;
+    flex-flow: column;
+    gap: 10dp;
+}
+
+.online-seat {
+    display: flex;
+    gap: 16dp;
+}
+
+.online-seat-number {
+    /* Wide enough for "Player 1-4" (several people on one computer) on one line. */
+    flex: 0 0 124dp;
+    white-space: nowrap;
+    opacity: 0.55;
+}
+
+.online-status {
+    font-weight: bold;
+}
+
+.online-problem {
+    font-weight: bold;
+    color: #cc4444;
+}
+
+.online-hint {
+    color: rgba(224, 219, 200, 55%);
+}
+
+button.online-game {
+    text-align: left;
+}
+
+/* Play Online: the ready check (online lobby only). */
+.online-ready-title {
+    font-weight: bold;
+    margin-top: 6dp;
+}
+
+.online-check {
+    display: flex;
+    gap: 10dp;
+    color: rgba(224, 219, 200, 70%);
+}
+
+.online-check .online-mark {
+    flex: 0 0 36dp;
+    color: #cc4444;
+}
+
+.online-check.ok .online-mark {
+    color: #44cc55;
+}
+
+button.online-ready,
+.online-ready-remote {
+    display: flex;
+    gap: 16dp;
+    text-align: left;
+}
+
+.online-ready-text {
+    flex: 1 1 auto;
+}
+
+.online-ready-state {
+    flex: 0 0 auto;
+    color: rgba(224, 219, 200, 55%);
+}
+
+.online-ready-state.ok {
+    color: #44cc55;
+    font-weight: bold;
+}
+
+.online-ready-count {
+    font-weight: bold;
+}
+
+progress.online-ready-bar {
+    height: 12dp;
+    border-radius: 6dp;
+    background-color: rgba(255, 255, 255, 18%);
+}
+
+progress.online-ready-bar fill {
+    background-color: #44cc55;
+    border-radius: 6dp;
+}
+
+button.online-start-off {
+    opacity: 0.4;
+}
+
+/* Ready check, compact: everything fits beside the seat list with little scrolling. */
+.online-ready-box {
+    display: flex;
+    flex-flow: column;
+    gap: 4dp;
+    font-size: 17dp;
+}
+
+.online-check .online-mark {
+    font-weight: bold;
+}
+
+button.online-ready {
+    padding: 4dp 12dp;
+    min-height: 0;
+}

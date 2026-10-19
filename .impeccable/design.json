@@ -1,0 +1,480 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-19T04:33:50+00:00",
+  "title": "Design System: PartyBoard",
+  "extensions": {
+    "colorMeta": {
+      "glass-blue": {
+        "role": "neutral",
+        "displayName": "Blue Glass",
+        "canonical": "rgba(37, 59, 156, 90%)",
+        "tonalRamp": [
+          "#0f173e",
+          "#182767",
+          "#223790",
+          "#2c46ba",
+          "#526ad6",
+          "#8395e2",
+          "#b5bfed",
+          "#eaedfa"
+        ]
+      },
+      "glass-blue-solid": {
+        "role": "neutral",
+        "displayName": "Blue Glass Solid",
+        "canonical": "rgba(37, 59, 156, 100%)",
+        "tonalRamp": [
+          "#0f173e",
+          "#182767",
+          "#223790",
+          "#2c46ba",
+          "#526ad6",
+          "#8395e2",
+          "#b5bfed",
+          "#eaedfa"
+        ]
+      },
+      "frame-cyan": {
+        "role": "primary",
+        "displayName": "Frame Cyan",
+        "canonical": "#009dda",
+        "tonalRamp": [
+          "#00374c",
+          "#005c80",
+          "#0081b2",
+          "#00a5e6",
+          "#29c3ff",
+          "#66d4ff",
+          "#a3e5ff",
+          "#e5f8ff"
+        ]
+      },
+      "focus-cyan": {
+        "role": "primary",
+        "displayName": "Focus Cyan",
+        "canonical": "#00b4fa",
+        "tonalRamp": [
+          "#00374c",
+          "#005c80",
+          "#0081b2",
+          "#00a5e6",
+          "#29c3ff",
+          "#66d4ff",
+          "#a3e5ff",
+          "#e5f8ff"
+        ]
+      },
+      "cyan-wash": {
+        "role": "primary",
+        "displayName": "Cyan Wash",
+        "canonical": "rgba(0, 157, 218, 20%)",
+        "tonalRamp": [
+          "#00374c",
+          "#005c80",
+          "#0081b2",
+          "#00a5e6",
+          "#29c3ff",
+          "#66d4ff",
+          "#a3e5ff",
+          "#e5f8ff"
+        ]
+      },
+      "cyan-fill": {
+        "role": "primary",
+        "displayName": "Cyan Fill",
+        "canonical": "rgba(0, 157, 218, 40%)",
+        "tonalRamp": [
+          "#00374c",
+          "#005c80",
+          "#0081b2",
+          "#00a5e6",
+          "#29c3ff",
+          "#66d4ff",
+          "#a3e5ff",
+          "#e5f8ff"
+        ]
+      },
+      "cream": {
+        "role": "neutral",
+        "displayName": "Cream",
+        "canonical": "#E0DBC8",
+        "tonalRamp": [
+          "#312c1c",
+          "#524a2e",
+          "#726840",
+          "#938553",
+          "#b2a576",
+          "#c8bf9d",
+          "#ded9c4",
+          "#f6f4ef"
+        ]
+      },
+      "cream-value": {
+        "role": "neutral",
+        "displayName": "Cream Value",
+        "canonical": "rgba(224, 219, 200, 60%)",
+        "tonalRamp": [
+          "#312c1c",
+          "#524a2e",
+          "#726840",
+          "#938553",
+          "#b2a576",
+          "#c8bf9d",
+          "#ded9c4",
+          "#f6f4ef"
+        ]
+      },
+      "cream-help": {
+        "role": "neutral",
+        "displayName": "Cream Help",
+        "canonical": "rgba(224, 219, 200, 65%)",
+        "tonalRamp": [
+          "#312c1c",
+          "#524a2e",
+          "#726840",
+          "#938553",
+          "#b2a576",
+          "#c8bf9d",
+          "#ded9c4",
+          "#f6f4ef"
+        ]
+      },
+      "cream-heading": {
+        "role": "neutral",
+        "displayName": "Cream Heading",
+        "canonical": "rgba(224, 219, 200, 42%)",
+        "tonalRamp": [
+          "#312c1c",
+          "#524a2e",
+          "#726840",
+          "#938553",
+          "#b2a576",
+          "#c8bf9d",
+          "#ded9c4",
+          "#f6f4ef"
+        ]
+      },
+      "tab-band": {
+        "role": "neutral",
+        "displayName": "Tab Band",
+        "canonical": "rgba(217, 217, 217, 10%)",
+        "tonalRamp": [
+          "#262626",
+          "#404040",
+          "#595959",
+          "#737373",
+          "#949494",
+          "#b2b2b2",
+          "#d1d1d1",
+          "#f2f2f2"
+        ]
+      },
+      "button-well": {
+        "role": "neutral",
+        "displayName": "Button Well",
+        "canonical": "rgba(17, 16, 10, 20%)",
+        "tonalRamp": [
+          "#302d1c",
+          "#504c2f",
+          "#706a42",
+          "#908855",
+          "#b0a878",
+          "#c6c19f",
+          "#dddac5",
+          "#f6f5ef"
+        ]
+      },
+      "button-hairline": {
+        "role": "neutral",
+        "displayName": "Button Hairline",
+        "canonical": "rgba(146, 135, 91, 25%)",
+        "tonalRamp": [
+          "#2f2c1d",
+          "#4f4931",
+          "#6e6645",
+          "#8d8358",
+          "#ada37b",
+          "#c4bda1",
+          "#dcd7c6",
+          "#f5f4ef"
+        ]
+      },
+      "white": {
+        "role": "neutral",
+        "displayName": "White",
+        "canonical": "#FFFFFF",
+        "tonalRamp": [
+          "#262626",
+          "#404040",
+          "#595959",
+          "#737373",
+          "#949494",
+          "#b2b2b2",
+          "#d1d1d1",
+          "#f2f2f2"
+        ]
+      },
+      "status-ok": {
+        "role": "status",
+        "displayName": "OK Green",
+        "canonical": "#44cc55",
+        "tonalRamp": [
+          "#103c16",
+          "#1b6424",
+          "#268c33",
+          "#31b442",
+          "#57d166",
+          "#87de92",
+          "#b7ebbd",
+          "#ebfaed"
+        ]
+      },
+      "status-problem": {
+        "role": "status",
+        "displayName": "Problem Red",
+        "canonical": "#cc4444",
+        "tonalRamp": [
+          "#3c1010",
+          "#641b1b",
+          "#8c2626",
+          "#b43131",
+          "#d15757",
+          "#de8787",
+          "#ebb7b7",
+          "#faebeb"
+        ]
+      },
+      "status-waiting": {
+        "role": "status",
+        "displayName": "Waiting Amber",
+        "canonical": "#ffa826",
+        "tonalRamp": [
+          "#4c2e00",
+          "#804c00",
+          "#b26b00",
+          "#e68900",
+          "#ffa929",
+          "#ffc266",
+          "#ffdaa3",
+          "#fff5e5"
+        ]
+      },
+      "danger-frame": {
+        "role": "status",
+        "displayName": "Danger Frame",
+        "canonical": "#852221",
+        "tonalRamp": [
+          "#3d100f",
+          "#661a19",
+          "#8f2523",
+          "#b82f2e",
+          "#d45553",
+          "#e18584",
+          "#edb6b5",
+          "#faebeb"
+        ]
+      },
+      "danger-title": {
+        "role": "status",
+        "displayName": "Danger Title",
+        "canonical": "#B3261E",
+        "tonalRamp": [
+          "#420e0b",
+          "#6d1712",
+          "#99201a",
+          "#c52a21",
+          "#e05048",
+          "#e9827c",
+          "#f2b4b0",
+          "#fbeae9"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "tab": {
+        "displayName": "Tab",
+        "purpose": "Window tabs, uppercase; inactive at 40% opacity."
+      },
+      "section-heading": {
+        "displayName": "Section heading",
+        "purpose": "Uppercase group labels in the settings list."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Row labels, values, choices, buttons."
+      },
+      "help": {
+        "displayName": "Help",
+        "purpose": "The single help line in the inspector."
+      },
+      "modal-title": {
+        "displayName": "Modal title",
+        "purpose": "Uppercase frame-cyan dialog titles."
+      }
+    },
+    "shadows": [
+      {
+        "name": "control-hairline",
+        "value": "rgba(146,135,91,25%) 0 0 0 1dp",
+        "purpose": "Resting boxed buttons."
+      },
+      {
+        "name": "focus-ring",
+        "value": "#00b4fa 0 0 0 2dp",
+        "purpose": "Hover, focus and pressed on every focusable control."
+      },
+      {
+        "name": "window-halo",
+        "value": "0 0 25dp 5dp",
+        "purpose": "Window edge, as shipped."
+      }
+    ],
+    "motion": [
+      {
+        "name": "window-open",
+        "value": "filter transform 0.18s cubic-out (opacity 0 to 1, scale 0.97 to 1)",
+        "purpose": "Window appears."
+      },
+      {
+        "name": "control-state",
+        "value": "background-color 0.12s cubic-out",
+        "purpose": "Row and button hover/focus/select."
+      },
+      {
+        "name": "tab-state",
+        "value": "opacity color 0.12s cubic-out",
+        "purpose": "Tab hover/active."
+      },
+      {
+        "name": "popup-slide",
+        "value": "transform 0.2s cubic-in-out",
+        "purpose": "Top popup bar slides in."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "short",
+        "value": "max-height: 640dp (screen padding drops to 12dp)"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Setting Row",
+      "kind": "custom",
+      "refersTo": "setting-row",
+      "description": "A setting: label left, value right, unboxed until focused.",
+      "html": "<div class=\"ds-row\" tabindex=\"0\"><span class=\"ds-key\">Frame Rate</span><span class=\"ds-value ds-modified\">&bull;&nbsp;90 FPS</span></div><div class=\"ds-row\" tabindex=\"0\"><span class=\"ds-key\">Enable VSync</span><span class=\"ds-value\">On</span></div>",
+      "css": ".ds-row { display:flex; align-items:center; gap:12px; min-height:52px; padding:13px 16px; border-radius:12px; font-family:'FOT-NewRodin Pro'; font-size:16px; color:#E0DBC8; background:transparent; transition:background-color .12s ease-out; cursor:pointer; } .ds-row .ds-key { flex:1 1 auto; } .ds-row .ds-value { color:rgba(224,219,200,.6); } .ds-row .ds-value.ds-modified { color:#E0DBC8; font-weight:bold; } .ds-row:hover, .ds-row:focus-visible { background:rgba(0,157,218,.2); box-shadow:#00b4fa 0 0 0 2px; outline:none; } .ds-row:active { background:rgba(0,157,218,.4); box-shadow:#00b4fa 0 0 0 2px; }"
+    },
+    {
+      "name": "List Action Row",
+      "kind": "button",
+      "refersTo": "list-action-row",
+      "description": "An action in the settings list; reads as a row, no value.",
+      "html": "<button class=\"ds-action\">Restore Default Window Size</button>",
+      "css": ".ds-action { display:block; width:100%; text-align:left; background:transparent; border:none; min-height:52px; padding:13px 16px; border-radius:12px; font-family:'FOT-NewRodin Pro'; font-size:16px; color:#E0DBC8; cursor:pointer; } .ds-action:hover, .ds-action:focus-visible { background:rgba(0,157,218,.2); box-shadow:#00b4fa 0 0 0 2px; outline:none; }"
+    },
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Main online actions (Host a game, Find games, Join, Leave lobby).",
+      "html": "<button class=\"ds-btn-primary\">Host a game</button>",
+      "css": ".ds-btn-primary { background:rgba(17,16,10,.2); box-shadow:rgba(146,135,91,.25) 0 0 0 1px; padding:13px 16px; border-radius:12px; border:none; font-family:'FOT-NewRodin Pro'; font-size:16px; color:#E0DBC8; text-align:center; width:100%; transition:background-color .12s ease-out; cursor:pointer; margin:4px 0; } .ds-btn-primary:hover, .ds-btn-primary:focus-visible, .ds-btn-primary:active { background:rgba(0,157,218,.2); box-shadow:#00b4fa 0 0 0 2px; outline:none; }"
+    },
+    {
+      "name": "Inspector Choice",
+      "kind": "button",
+      "refersTo": "inspector-choice",
+      "description": "Choices for the focused row, stacked in the inspector; the current one is cyan-filled.",
+      "html": "<div class=\"ds-choices\"><button class=\"ds-choice\">60 FPS</button><button class=\"ds-choice ds-selected\">90 FPS</button><button class=\"ds-choice\">120 FPS</button></div>",
+      "css": ".ds-choices { display:flex; flex-direction:column; gap:6px; } .ds-choice { background:rgba(17,16,10,.2); box-shadow:rgba(146,135,91,.25) 0 0 0 1px; padding:13px 16px; border-radius:12px; border:none; font-family:'FOT-NewRodin Pro'; font-size:16px; color:#E0DBC8; text-align:center; width:100%; transition:background-color .12s ease-out; cursor:pointer; } .ds-choice.ds-selected { background:rgba(0,157,218,.4); color:#fff; } .ds-choice:hover, .ds-choice:focus-visible { background:rgba(0,157,218,.2); box-shadow:#00b4fa 0 0 0 2px; outline:none; }"
+    },
+    {
+      "name": "Help Line",
+      "kind": "custom",
+      "refersTo": "help-line",
+      "description": "The one short help sentence under the inspector choices.",
+      "html": "<p class=\"ds-help\">Smoother motion only: the game itself still runs at 60 Hz, with no extra input delay.</p>",
+      "css": ".ds-help { margin:10px 0 0; font-family:'FOT-NewRodin Pro'; font-size:15px; line-height:1.5; color:rgba(224,219,200,.65); }"
+    },
+    {
+      "name": "Tab Bar",
+      "kind": "nav",
+      "refersTo": "tab",
+      "description": "Uppercase bold tabs on a faint band; active tab has a 4px focus-cyan underline.",
+      "html": "<nav class=\"ds-tabs\"><a class=\"ds-tab ds-active\" href=\"#\">Video</a><a class=\"ds-tab\" href=\"#\">Input</a><a class=\"ds-tab\" href=\"#\">Gameplay</a></nav>",
+      "css": ".ds-tabs { display:flex; height:64px; padding:0 12px; background:rgba(37,59,156,.9); background-image:linear-gradient(rgba(217,217,217,.1),rgba(217,217,217,.1)); border-bottom:2px solid #009dda; font-family:'FOT-NewRodin Pro'; font-weight:bold; font-size:14px; text-transform:uppercase; } .ds-tab { padding:0 18px; line-height:60px; color:#E0DBC8; opacity:.4; text-decoration:none; border-bottom:4px solid transparent; transition:opacity .12s ease-out; } .ds-tab.ds-active { opacity:1; border-bottom-color:#00b4fa; } .ds-tab:hover, .ds-tab:focus-visible { opacity:1; background:linear-gradient(rgba(0,180,250,0),rgba(0,180,250,.15)); outline:none; }"
+    },
+    {
+      "name": "Section Heading",
+      "kind": "custom",
+      "refersTo": "section-heading",
+      "description": "Groups rows in the list.",
+      "html": "<div class=\"ds-heading\">Display</div>",
+      "css": ".ds-heading { font-family:'FOT-NewRodin Pro'; font-weight:bold; font-size:13px; text-transform:uppercase; color:rgba(224,219,200,.42); padding:4px 16px 6px; }"
+    },
+    {
+      "name": "Glass Panel",
+      "kind": "card",
+      "refersTo": "glass-blue",
+      "description": "The window surface over the running game.",
+      "html": "<div class=\"ds-panel\"><div class=\"ds-heading\">Display</div></div>",
+      "css": ".ds-panel { background:rgba(37,59,156,.9); border:2px solid #009dda; border-radius:18px; backdrop-filter:blur(5px); padding:20px 28px; color:#E0DBC8; font-family:'FOT-NewRodin Pro'; font-size:16px; } .ds-heading { font-weight:bold; font-size:13px; text-transform:uppercase; color:rgba(224,219,200,.42); padding:4px 16px 6px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Blue Glass Console Sheet",
+    "overview": "The F1 menu is the game's own blue glass panel, laid out like a console settings sheet. A translucent royal-blue pane with a cyan frame floats over the still-running game; inside, a list of plain sentence-case rows sits on the left and an inspector on the right shows the choices for the focused row plus one short line of help. The look is the original PartyBoard menu (glass, cyan, cream, NewRodin, uppercase tabs and headings); the feel is roomy and quiet: rows have no boxes until focus lands on them.\n\nDensity is deliberately low. Rows are at least 52dp tall, the list pane is a little wider than the inspector (1.25 : 1), sections are separated by air and a small uppercase heading rather than rules, and the bottom of the screen is kept clear (80dp) for the \"Menu open\" notice. Controller, mouse and keyboard share one focus model, so the cyan focus ring is the most important visual in the system.",
+    "keyCharacteristics": [
+      "Translucent blue glass panel, 2dp cyan frame, 18dp corners, blurred game behind.",
+      "One accent family: cyan. Frame and dividers in frame cyan, focus and the active tab in focus cyan, selection as a cyan fill.",
+      "Warm cream text; values, help and headings are the same cream at lower opacity.",
+      "Uppercase bold for tabs and section headings only; everything else is sentence case.",
+      "Settings are unboxed 52dp rows (label left, value right); boxed buttons are reserved for inspector choices and the main online actions."
+    ],
+    "rules": [
+      {
+        "name": "The One Accent Rule",
+        "body": "Cyan is the only interactive colour. Focus, selection, the active tab and the frame are all cyan; status colours never mark focus or selection.",
+        "section": "colors"
+      },
+      {
+        "name": "The Opacity Ladder Rule",
+        "body": "Secondary text is cream at lower opacity (60% values, 65% help, 42% headings), never a new grey or hue.",
+        "section": "colors"
+      },
+      {
+        "name": "The Uppercase-Is-Structure Rule",
+        "body": "Only tabs, section headings and modal titles are uppercase. Row labels, values, choices and buttons are sentence case or the approved title-case labels, never uppercase.",
+        "section": "typography"
+      },
+      {
+        "name": "The One Line Of Help Rule",
+        "body": "The inspector shows the choices, then at most one short help sentence (10dp below the choices). No paragraphs, no warnings in prose.",
+        "section": "typography"
+      },
+      {
+        "name": "The Room For The Notice Rule",
+        "body": "The bottom 80dp of the screen belongs to the \"Menu open\" notice; the window never extends into it.",
+        "section": "layout"
+      }
+    ],
+    "dos": [
+      "Do build every new setting as a 52dp sentence-case row: label left, value right, no box at rest.",
+      "Do show focus with the 2dp focus-cyan ring and cyan wash on every focusable element, so controller users always see where they are.",
+      "Do put the choices in the inspector and follow them with at most one short help line.",
+      "Do keep the window on blue glass with the 2dp frame-cyan border and cream text.",
+      "Do keep tabs and section headings uppercase bold, and nothing else.",
+      "Do leave the bottom 80dp free for the \"Menu open\" notice."
+    ],
+    "donts": [
+      "Don't box rows or draw separators between them; air and section headings group them.",
+      "Don't introduce a second accent for focus or selection; cyan is the only interactive colour.",
+      "Don't write paragraphs of help or more than one help line per setting.",
+      "Don't give list actions a button look unless they are a main online action (primary).",
+      "Don't use a face other than FOT-NewRodin Pro for text."
+    ]
+  }
+}

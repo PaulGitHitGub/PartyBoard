@@ -1,0 +1,9 @@
+# texture (dump name)                                   x0 y0 x1 y1  threshold  what
+tex1_64x64_0704e8a46aeda6ce_14                          12 10 52 54  0.07  m418 3D ball B
+tex1_64x64_47c555db8c0cd62f_14                          12 10 52 54  0.07  m418 3D ball A
+tex1_64x64_55f7271463119aa2_14                          12 10 52 54  0.07  m418 3D ball X
+tex1_64x64_f996c8f4fc2d8a80_14                          12 10 52 54  0.07  m418 3D ball Y
+tex1_128x128_e4db2443639012a4_4                         30 22 98 92  0.07  m460 key cap L
+tex1_128x128_9086cb5bf3c66e16_4                         30 22 98 92  0.07  m460 key cap R
+tex1_128x128_b929d4f7a5f83f06_a6bdc4f6621677e7_9         4 34 124 96 0.05  rules screen START plate
+tex1_128x64_0acc07f7775b335a_fb787326932e90a8_9         44  3 86 41  0.07  rules screen Z bar

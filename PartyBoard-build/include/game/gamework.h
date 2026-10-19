@@ -1,0 +1,50 @@
+#ifndef _GAME_GAMEWORK_H
+#define _GAME_GAMEWORK_H
+
+#include "dolphin.h"
+
+#define GW_PLAYER_MAX 4
+
+void GWInit(void);
+void GWGameStatReset(void);
+// s32 GWMessSpeedGet(void);
+s32 GWMessDelayGet(void);
+void GWMGRecordSet(s32 index, u32 value);
+u32 GWMGRecordGet(s32 index);
+void GWCharColorGet(s32 character, GXColor *color);
+void GWBoardPlayCountSet(s32 board, u8 value);
+void GWBoardPlayCountAdd(s32 board, u8 value);
+u8 GWBoardPlayCountGet(s32 board);
+void GWBoardMaxStarsSet(s32 board, s16 value);
+s32 GWBoardMaxStarsGet(s32 board);
+void GWBoardMaxCoinsSet(s32 board, s32 value);
+s32 GWBoardMaxCoinsGet(s32 board);
+s32 GWBoardWinCountInc(s32 character, s32 board);
+s32 GWBoardWinCountGet(s32 character, s32 board);
+void GWBoardWinCountSet(s32 character, s32 board, s32 value);
+s32 GWMGAvailGet(s32 id);
+void GWMGAvailSet(s32 id);
+s32 GWMGCustomGet(s32 id);
+void GWMGCustomSet(s32 id);
+void GWMGCustomReset(s32 id);
+s16 GWCoinsGet(s32 player);
+void GWCoinsSet(s32 player, s16 value);
+void GWCoinsAdd(s32 player, s16 amount);
+void GWStarsSet(s32 player, s16 value);
+void GWStarsAdd(s32 player, s16 amount);
+s32 GWStarsGet(s32 player);
+void GWTotalStarsSet(s16 value);
+void GWTotalStarsAdd(s16 amount);
+u16 GWTotalStarsGet(void);
+
+#ifdef TARGET_PC
+/* 8-player party: give each of the first 'count' seats (GWPlayerCfg) its own
+   controller port (pad_idx 0-7, all different). Human seats keep the port they
+   were given; computer seats, and a human whose port an earlier human already
+   has (logged as a warning), get the free ports in order. Logs what it changed
+   and returns how many seats it changed. The board calls it when an 8-player
+   game starts; a seat menu may call it after setting the human seats. */
+s32 GWPartyPadsAssign(s32 count);
+#endif
+
+#endif

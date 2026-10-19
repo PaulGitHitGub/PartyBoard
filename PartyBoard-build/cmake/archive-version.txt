@@ -1,0 +1,7 @@
+# Version of this source for builds from a copy without .git (the Windows PC).
+# `git archive` fills in the placeholders below (export-subst in .gitattributes);
+# in a git checkout they stay unfilled and CMake asks git instead. Do not edit.
+revision=$Format:%H$
+describe=$Format:%(describe:tags,match=v*)$
+refs=$Format:%D$
+date=$Format:%ad$

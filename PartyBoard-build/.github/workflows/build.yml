@@ -1,0 +1,605 @@
+name: Build
+
+on:
+  push:
+    branches-ignore:
+      - switch-native-bootstrap
+    # Without this a push filter that names only branches ignores tags entirely,
+    # so the v* tag publish-desktop and build-android wait for never ran here.
+    tags:
+      - 'v*'
+    paths-ignore:
+      - '*.md'
+      - '*LICENSE'
+  pull_request:
+  # Run by hand to publish an Android build from any branch (see build-android).
+  workflow_dispatch:
+
+env:
+  # SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: "sccache"
+  SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+
+jobs:
+  build-gc:
+    container: ghcr.io/mariopartyrd/mp-gc-build:main
+
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [GMPE01_00, GMPE01_01, GMPP01_00, GMPP01_01, GMPP01_02, GMPJ01_00]
+
+    steps:
+    # Checkout the repository
+    - name: Checkout
+      uses: actions/checkout@v6
+      with:
+        submodules: recursive
+
+    # Set Git config
+    - name: Git config
+      run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+    # Copy the original files to the workspace
+    - name: Prepare
+      run: cp -R /orig .
+
+    - name: Build
+      run: |
+        python configure.py --map --version ${{ matrix.version }} \
+            --binutils /binutils --compilers /compilers
+        ninja all_source progress build/${{ matrix.version }}/report.json
+
+    # Upload map files
+    - name: Upload map
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ matrix.version }}_maps
+        path: build/${{ matrix.version }}/**/*.MAP
+
+    # Upload progress report
+    - name: Upload report
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ matrix.version }}_report
+        path: build/${{ matrix.version }}/report.json
+
+  build-linux:
+    name: Build Linux (${{matrix.name}})
+    runs-on: ${{matrix.runner}}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: GCC x86_64
+            runner: ubuntu-latest
+            preset: gcc
+            artifact_arch: x86_64
+#          - name: GCC aarch64
+#            runner: ubuntu-24.04-arm
+#            preset: gcc
+#            artifact_arch: aarch64
+#          - name: Clang x86_64
+#            runner: ubuntu-latest
+#            preset: clang
+#            artifact_arch: x86_64
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      # Same step cubeshelf-windows.yml runs. CI checks out the recorded
+      # submodule commits, so PartyBoard's changes to MusyX and Aurora only
+      # exist once these are applied - without them the port has not linked
+      # since PartyBoard_AudioWalkVoices moved into MusyX.
+      - name: Apply PartyBoard dependency patches
+        shell: bash
+        run: |
+          git -C extern/musyx apply --check ../../patches/musyx-partyboard.patch
+          git -C extern/musyx apply ../../patches/musyx-partyboard.patch
+          git -C extern/aurora apply --check ../../patches/aurora-partyboard.patch
+          git -C extern/aurora apply ../../patches/aurora-partyboard.patch
+          git -C extern/aurora apply --check ../../patches/aurora-render-fixes.patch
+          git -C extern/aurora apply ../../patches/aurora-render-fixes.patch
+          git -C extern/aurora apply --check ../../patches/aurora-android-surface-deadlock.patch
+          git -C extern/aurora apply ../../patches/aurora-android-surface-deadlock.patch
+          git -C extern/aurora apply --check ../../patches/aurora-mobile-one-local-player.patch
+          git -C extern/aurora apply ../../patches/aurora-mobile-one-local-player.patch
+          git -C extern/aurora apply --check ../../patches/aurora-render-worker-idle.patch
+          git -C extern/aurora apply ../../patches/aurora-render-worker-idle.patch
+          git -C extern/aurora apply --check ../../patches/aurora-quest-stereo.patch
+          git -C extern/aurora apply ../../patches/aurora-quest-stereo.patch
+          git -C extern/aurora apply --check ../../patches/aurora-android-surface-generation.patch
+          git -C extern/aurora apply --check ../../patches/aurora-quest-quality.patch
+          git -C extern/aurora apply ../../patches/aurora-android-surface-generation.patch
+          git -C extern/aurora apply ../../patches/aurora-quest-quality.patch
+
+      # Aurora drops a draw whose pipeline is still compiling instead of delaying
+      # it, so a player with an empty cache sees missing geometry on every scene's
+      # first visit. seed_pipeline_cache() fixes that, but it rejects a seed whose
+      # schema does not match with nothing louder than a Log.warn -- a failure that
+      # ships silently. Runs after the patches, since it reads the schema constant
+      # out of the engine source rather than duplicating it.
+      - name: Check pipeline cache seed
+        run: python3 tools/check_pipeline_cache_seed.py
+
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get -y install ninja-build clang lld openssl libcurl4-openssl-dev \
+            zlib1g-dev libglu1-mesa-dev libdbus-1-dev libvulkan-dev libxi-dev libxrandr-dev libasound2-dev \
+            libpulse-dev libudev-dev libpng-dev libncurses5-dev libx11-xcb-dev libfreetype-dev \
+            libxinerama-dev libxcursor-dev python3-markupsafe libgtk-3-dev libssl-dev \
+            libxss-dev libfuse2 libusb-1.0-0-dev libdecor-0-dev libpipewire-0.3-dev libunwind-dev
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
+
+      - name: Print sccache stats
+        run: sccache --show-stats
+
+      - name: Configure CMake
+        run: cmake --preset x-linux-ci-${{matrix.preset}}
+
+      - name: Build
+        run: cmake --build --preset x-linux-ci-${{matrix.preset}}
+
+      # What the in-game lobby and Friends tab rely on where CubeShelf cannot run: the PB4
+      # invitation must stay byte-identical to PartyBoardOnline.exe, and the profile export and
+      # sealed presence must open exactly as CubeShelf wrote them (tools/tests/fixtures).
+      - name: Online, CubeShelf and screen controller tests
+        run: |
+          cmake --build --preset x-linux-ci-${{matrix.preset}} --target online_tests
+          build/x-linux-ci-${{matrix.preset}}/tests/online_invitation_test
+          build/x-linux-ci-${{matrix.preset}}/tests/cubeshelf_social_test tools/tests/fixtures
+          build/x-linux-ci-${{matrix.preset}}/tests/touch_controls_test
+          build/x-linux-ci-${{matrix.preset}}/tests/disc_version_test
+          build/x-linux-ci-${{matrix.preset}}/tests/app_update_test
+
+      - name: Generate AppImage
+        run: ci/build-appimage.sh
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: partyboard-${{env.PARTY_BOARD_VERSION}}-linux-${{matrix.preset}}-${{matrix.artifact_arch}}
+          path: |
+            build/install/Party_Board-*.AppImage
+            build/install/debug.tar.*
+
+  build-apple:
+    name: Build Apple (${{matrix.name}})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: AppleClang macOS arm64
+            platform: macos
+            preset: x-macos-ci-arm64
+            artifact_name: macos-appleclang-arm64
+          - name: AppleClang macOS x86_64
+            platform: macos
+            preset: x-macos-ci-x86_64
+            artifact_name: macos-appleclang-x86_64
+#          - name: AppleClang iOS arm64
+#            platform: ios
+#            preset: x-ios-ci
+#            artifact_name: ios-appleclang-arm64
+          # - name: AppleClang tvOS arm64
+          #   platform: tvos
+          #   preset: x-tvos-ci
+          #   artifact_name: tvos-appleclang-arm64
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      # Same step cubeshelf-windows.yml runs. CI checks out the recorded
+      # submodule commits, so PartyBoard's changes to MusyX and Aurora only
+      # exist once these are applied - without them the port has not linked
+      # since PartyBoard_AudioWalkVoices moved into MusyX.
+      - name: Apply PartyBoard dependency patches
+        shell: bash
+        run: |
+          git -C extern/musyx apply --check ../../patches/musyx-partyboard.patch
+          git -C extern/musyx apply ../../patches/musyx-partyboard.patch
+          git -C extern/aurora apply --check ../../patches/aurora-partyboard.patch
+          git -C extern/aurora apply ../../patches/aurora-partyboard.patch
+          git -C extern/aurora apply --check ../../patches/aurora-render-fixes.patch
+          git -C extern/aurora apply ../../patches/aurora-render-fixes.patch
+          git -C extern/aurora apply --check ../../patches/aurora-android-surface-deadlock.patch
+          git -C extern/aurora apply ../../patches/aurora-android-surface-deadlock.patch
+          git -C extern/aurora apply --check ../../patches/aurora-mobile-one-local-player.patch
+          git -C extern/aurora apply ../../patches/aurora-mobile-one-local-player.patch
+          git -C extern/aurora apply --check ../../patches/aurora-render-worker-idle.patch
+          git -C extern/aurora apply ../../patches/aurora-render-worker-idle.patch
+          git -C extern/aurora apply --check ../../patches/aurora-quest-stereo.patch
+          git -C extern/aurora apply ../../patches/aurora-quest-stereo.patch
+          git -C extern/aurora apply --check ../../patches/aurora-android-surface-generation.patch
+          git -C extern/aurora apply --check ../../patches/aurora-quest-quality.patch
+          git -C extern/aurora apply ../../patches/aurora-android-surface-generation.patch
+          git -C extern/aurora apply ../../patches/aurora-quest-quality.patch
+
+      - name: Install dependencies
+        run: brew install cmake ninja
+
+      - name: Install Rust iOS target
+        if: matrix.platform == 'ios'
+        run: |
+          rustup toolchain install stable
+          rustup target add aarch64-apple-ios
+
+      - name: Install Rust tvOS target
+        if: matrix.platform == 'tvos'
+        run: |
+          rustup toolchain install nightly
+          rustup target add --toolchain nightly aarch64-apple-tvos
+
+      - name: Install Rust x86_64 macOS target
+        if: endsWith(matrix.preset, 'x86_64')
+        run: |
+          rustup toolchain install stable
+          rustup target add x86_64-apple-darwin
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
+
+      - name: Configure CMake
+        run: cmake --preset ${{matrix.preset}}
+
+      - name: Build
+        run: cmake --build --preset ${{matrix.preset}}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: partyboard-${{env.PARTY_BOARD_VERSION}}-${{matrix.artifact_name}}
+          path: |
+            build/install/PartyBoard.app
+            build/install/debug.tar.*
+
+  build-android:
+    name: Build Android (${{matrix.name}})
+    runs-on: ubuntu-latest
+    # Publishes the update the app offers (last step).
+    permissions:
+      contents: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Clang arm64-v8a
+            preset: x-android-ci-arm64
+            abi: arm64-v8a
+            artifact_arch: arm64
+            rust_target: aarch64-linux-android
+
+    env:
+      ANDROID_NDK_VERSION: "29.0.14206865"
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      # Same step cubeshelf-windows.yml runs. CI checks out the recorded
+      # submodule commits, so PartyBoard's changes to MusyX and Aurora only
+      # exist once these are applied - without them the port has not linked
+      # since PartyBoard_AudioWalkVoices moved into MusyX.
+      - name: Apply PartyBoard dependency patches
+        shell: bash
+        run: |
+          git -C extern/musyx apply --check ../../patches/musyx-partyboard.patch
+          git -C extern/musyx apply ../../patches/musyx-partyboard.patch
+          git -C extern/aurora apply --check ../../patches/aurora-partyboard.patch
+          git -C extern/aurora apply ../../patches/aurora-partyboard.patch
+          git -C extern/aurora apply --check ../../patches/aurora-render-fixes.patch
+          git -C extern/aurora apply ../../patches/aurora-render-fixes.patch
+          git -C extern/aurora apply --check ../../patches/aurora-android-surface-deadlock.patch
+          git -C extern/aurora apply ../../patches/aurora-android-surface-deadlock.patch
+          git -C extern/aurora apply --check ../../patches/aurora-mobile-one-local-player.patch
+          git -C extern/aurora apply ../../patches/aurora-mobile-one-local-player.patch
+          git -C extern/aurora apply --check ../../patches/aurora-render-worker-idle.patch
+          git -C extern/aurora apply ../../patches/aurora-render-worker-idle.patch
+          git -C extern/aurora apply --check ../../patches/aurora-quest-stereo.patch
+          git -C extern/aurora apply ../../patches/aurora-quest-stereo.patch
+          git -C extern/aurora apply --check ../../patches/aurora-android-surface-generation.patch
+          git -C extern/aurora apply --check ../../patches/aurora-quest-quality.patch
+          git -C extern/aurora apply ../../patches/aurora-android-surface-generation.patch
+          git -C extern/aurora apply ../../patches/aurora-quest-quality.patch
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get -y install ninja-build
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android SDK packages
+        # cmake: the app's own Meta Quest library (platforms/android/app/src/main/cpp).
+        run: sdkmanager "platforms;android-36" "build-tools;36.1.0" "ndk;${ANDROID_NDK_VERSION}" "cmake;3.22.1"
+
+      - name: Install Rust Android target
+        run: |
+          rustup toolchain install stable
+          rustup target add ${{matrix.rust_target}}
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
+
+      # The real audio (MusyX, src/game/audio.c): without it Android builds the
+      # silent src/port/audio.c.
+      - name: Configure CMake
+        run: cmake --preset ${{matrix.preset}} -DPARTYBOARD_EXPERIMENTAL_MUSYX_AUDIO=ON
+
+      - name: Build native library
+        run: cmake --build --preset ${{matrix.preset}} --target partyboard
+
+      - name: Stage stripped JNI library
+        run: ANDROID_STAGE_ABIS="${{matrix.abi}}" platforms/android/scripts/stage-jni-libs.sh
+
+      # The online lobby's protocol, on the JVM (the PC companion runs Tests.cs).
+      - name: Test online lobby
+        working-directory: platforms/android
+        run: ./gradlew :app:testPhoneReleaseUnitTest
+
+      # The run number only grows, so each build installs over the previous one.
+      - name: Build APK
+        working-directory: platforms/android
+        env:
+          PARTYBOARD_VERSION_CODE: ${{github.run_number}}
+        run: ./gradlew :app:assembleRelease --rerun-tasks
+
+      # Android refuses to install an unsigned APK, and only installs an update
+      # signed with the same key as the installed app; uninstalling instead
+      # deletes the saves, settings and CubeShelf profile. So every build is
+      # signed with the same key: the repository's ANDROID_KEYSTORE_BASE64
+      # secret (with ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS and
+      # ANDROID_KEY_PASSWORD) when it is set, otherwise the public test key in
+      # platforms/android/partyboard-test.keystore. That key is not a release
+      # signature: anyone can sign with it, like Android's own debug key.
+      - name: Sign APKs
+        working-directory: platforms/android/app/build/outputs/apk
+        env:
+          KEYSTORE_BASE64: ${{secrets.ANDROID_KEYSTORE_BASE64}}
+          KEYSTORE_PASSWORD: ${{secrets.ANDROID_KEYSTORE_PASSWORD}}
+          KEY_ALIAS: ${{secrets.ANDROID_KEY_ALIAS}}
+          KEY_PASSWORD: ${{secrets.ANDROID_KEY_PASSWORD}}
+        run: |
+          BUILD_TOOLS="${ANDROID_HOME:-$ANDROID_SDK_ROOT}/build-tools/36.1.0"
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/signing.keystore"
+            KEYSTORE="$RUNNER_TEMP/signing.keystore"
+            SUFFIX=signed
+          else
+            KEYSTORE="$GITHUB_WORKSPACE/platforms/android/partyboard-test.keystore"
+            export KEYSTORE_PASSWORD=android KEY_ALIAS=androiddebugkey KEY_PASSWORD=android
+            SUFFIX=debug-signed
+          fi
+          # phone: no install permission; quest: installs its updates in the headset.
+          for FLAVOR in phone quest; do
+            INPUT=$FLAVOR/release/app-$FLAVOR-${{matrix.abi}}-release-unsigned.apk
+            OUTPUT=$FLAVOR/release/app-$FLAVOR-${{matrix.abi}}-$SUFFIX.apk
+            "$BUILD_TOOLS/zipalign" -f -p 4 "$INPUT" aligned.apk
+            "$BUILD_TOOLS/apksigner" sign --ks "$KEYSTORE" --ks-pass env:KEYSTORE_PASSWORD \
+              --ks-key-alias "$KEY_ALIAS" --key-pass env:KEY_PASSWORD --out "$OUTPUT" aligned.apk
+            "$BUILD_TOOLS/apksigner" verify --print-certs "$OUTPUT"
+            rm -f aligned.apk
+          done
+          rm -f "$RUNNER_TEMP/signing.keystore"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: partyboard-${{env.PARTY_BOARD_VERSION}}-android-${{matrix.artifact_arch}}
+          path: |
+            platforms/android/app/build/outputs/apk/*/release/app-*-${{matrix.abi}}-release-unsigned.apk
+            platforms/android/app/build/outputs/apk/*/release/app-*-${{matrix.abi}}-*signed.apk
+
+      # Every change that reaches audio-local becomes the update the app offers
+      # (src/port/app_update.cpp): the APKs and their manifests go to the release
+      # partyboard-android-latest (android-update.json for phones,
+      # quest-update.json for the headset), with the commits since the previous
+      # build as the notes. A v* tag or a hand-run of this workflow publishes too.
+      - name: Publish Android update
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'push' && (github.ref == 'refs/heads/audio-local' || startsWith(github.ref, 'refs/tags/v')))
+        env:
+          GH_TOKEN: ${{github.token}}
+        run: |
+          VERSION_NAME=$(sed -n "s/^ *versionName '\(.*\)'$/\1/p" platforms/android/app/build.gradle)
+          signed() {
+            ls platforms/android/app/build/outputs/apk/$1/release/app-$1-${{matrix.abi}}-*signed.apk | grep -v unsigned | head -n 1
+          }
+          # The Quest first: the phone manifest, which every build checks for a
+          # newer version, comes last, so the Quest APK is there when it says so.
+          platforms/android/scripts/publish-update.sh "$(signed quest)" ${{matrix.abi}} ${{github.run_number}} "$VERSION_NAME" quest
+          platforms/android/scripts/publish-update.sh "$(signed phone)" ${{matrix.abi}} ${{github.run_number}} "$VERSION_NAME" android
+
+  build-windows:
+    name: Build Windows (${{matrix.name}})
+    runs-on: ${{matrix.runner}}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: MSVC x86_64
+            runner: windows-latest
+            preset: msvc
+            msvc_arch: amd64
+            vcpkg_arch: x64
+            artifact_arch: x86_64
+          # - name: MSVC arm64
+          #   runner: windows-11-arm
+          #   preset: arm64-msvc
+          #   msvc_arch: arm64
+          #   vcpkg_arch: arm64
+          #   artifact_arch: arm64
+          # - name: Clang x86_64
+          #   runner: windows-latest
+          #   preset: clang
+          #   msvc_arch: amd64
+          #   vcpkg_arch: x64
+          #   artifact_arch: x86_64
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      # Same step cubeshelf-windows.yml runs. CI checks out the recorded
+      # submodule commits, so PartyBoard's changes to MusyX and Aurora only
+      # exist once these are applied - without them the port has not linked
+      # since PartyBoard_AudioWalkVoices moved into MusyX.
+      - name: Apply PartyBoard dependency patches
+        shell: bash
+        run: |
+          git -C extern/musyx apply --check ../../patches/musyx-partyboard.patch
+          git -C extern/musyx apply ../../patches/musyx-partyboard.patch
+          git -C extern/aurora apply --check ../../patches/aurora-partyboard.patch
+          git -C extern/aurora apply ../../patches/aurora-partyboard.patch
+          git -C extern/aurora apply --check ../../patches/aurora-render-fixes.patch
+          git -C extern/aurora apply ../../patches/aurora-render-fixes.patch
+          git -C extern/aurora apply --check ../../patches/aurora-android-surface-deadlock.patch
+          git -C extern/aurora apply ../../patches/aurora-android-surface-deadlock.patch
+          git -C extern/aurora apply --check ../../patches/aurora-mobile-one-local-player.patch
+          git -C extern/aurora apply ../../patches/aurora-mobile-one-local-player.patch
+          git -C extern/aurora apply --check ../../patches/aurora-render-worker-idle.patch
+          git -C extern/aurora apply ../../patches/aurora-render-worker-idle.patch
+          git -C extern/aurora apply --check ../../patches/aurora-quest-stereo.patch
+          git -C extern/aurora apply ../../patches/aurora-quest-stereo.patch
+          git -C extern/aurora apply --check ../../patches/aurora-android-surface-generation.patch
+          git -C extern/aurora apply --check ../../patches/aurora-quest-quality.patch
+          git -C extern/aurora apply ../../patches/aurora-android-surface-generation.patch
+          git -C extern/aurora apply ../../patches/aurora-quest-quality.patch
+
+      - name: Enable Visual Studio environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{matrix.msvc_arch}}
+
+      - name: Test Quest adaptive quality and performance parser
+        run: |
+          ./tools/test_quest_quality.ps1
+          python tools/tests/test_quest_performance.py
+
+      # msvc-dev-cmd sets VCPKG_ROOT, set it back
+      - name: Override VCPKG_ROOT
+        run: echo "VCPKG_ROOT=C:\vcpkg" >> $env:GITHUB_ENV
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
+
+      - name: Install dependencies
+        run: |
+          choco install ninja
+          vcpkg install freetype:${{matrix.vcpkg_arch}}-windows-static zstd:${{matrix.vcpkg_arch}}-windows-static
+
+      - name: Configure CMake
+        run: cmake --preset x-windows-ci-${{matrix.preset}}
+
+      - name: Build
+        run: cmake --build --preset x-windows-ci-${{matrix.preset}}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: partyboard-${{env.PARTY_BOARD_VERSION}}-win32-msvc-${{matrix.artifact_arch}}
+          path: |
+            build/install/*.exe
+            build/install/*.dll
+            build/install/res/
+            build/install/debug.7z
+
+  # A v* tag is one release for every platform. Windows reaches it from
+  # cubeshelf-windows.yml, the package CubeShelf installs and the one to download;
+  # Android keeps its own update channel (partyboard-android-latest) and is also
+  # attached here. This adds the Linux AppImage and the macOS apps, which until
+  # now only ever existed as 14-day Actions artifacts.
+  #
+  # always(): a platform that failed to build is missing from the release rather
+  # than holding back the ones that built. The job summary names what is absent.
+  publish-desktop:
+    name: Publish release (Linux, macOS, Android)
+    if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [build-linux, build-apple, build-android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v5
+        with:
+          pattern: partyboard-*
+          path: artifacts
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          mkdir -p out
+          shopt -s nullglob
+          for appimage in artifacts/*linux*/Party_Board-*.AppImage; do
+            cp "$appimage" "out/PartyBoard-$TAG-linux-x86_64.AppImage"
+          done
+          for dir in artifacts/*macos-appleclang-*; do
+            arch="${dir##*macos-appleclang-}"
+            if [ -d "$dir/PartyBoard.app" ]; then
+              # Artifacts drop file modes; restore the executable bit before zipping.
+              chmod +x "$dir"/PartyBoard.app/Contents/MacOS/* || true
+              (cd "$dir" && zip -qry "$GITHUB_WORKSPACE/out/PartyBoard-$TAG-macos-$arch.zip" PartyBoard.app)
+            fi
+          done
+          for apk in artifacts/*android*/*/release/app-*-signed.apk; do
+            case "$apk" in *unsigned*) continue;; esac
+            name=$(basename "$apk"); flavor=$(echo "$name" | cut -d- -f2)
+            cp "$apk" "out/PartyBoard-$TAG-$flavor-arm64-v8a.apk"
+          done
+          ls -la out
+          {
+            echo "### $TAG"
+            for want in linux-x86_64.AppImage macos-arm64.zip macos-x86_64.zip phone-arm64-v8a.apk quest-arm64-v8a.apk; do
+              if [ -e "out/PartyBoard-$TAG-$want" ]; then echo "- OK $want"; else echo "- **missing** $want (its build failed)"; fi
+            done
+            echo "- Windows: cubeshelf-windows.yml"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{github.token}}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          shopt -s nullglob
+          files=(out/*)
+          [ ${#files[@]} -gt 0 ] || { echo "No platform built; nothing to publish."; exit 1; }
+          # cubeshelf-windows.yml may have created this release first, or may be
+          # about to: create it if absent, and never fail because the other got there.
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "PartyBoard $TAG" \
+              --notes "PartyBoard $TAG for Windows, Linux, macOS and Android." --prerelease || true
+          gh release upload "$TAG" "${files[@]}" --clobber

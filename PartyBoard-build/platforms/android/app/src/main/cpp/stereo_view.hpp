@@ -1,0 +1,309 @@
+#pragma once
+
+// The game's 3D world as a model on the table, seen in stereo (quest_stereo.cpp
+// in the game draws it; this shows it).
+//
+// Images go around a ring shared with the game through AHardwareBuffers:
+//   free -> drawing (the game took it for a frame, with the eye poses of that
+//   moment) -> ready (Aurora submitted it, with a fence) -> copied into the
+//   OpenXR swapchain and shown with those same poses -> copying -> free
+//   (only when the GPU has finished reading the source).
+// Showing each image with the poses it was drawn for lets the compositor
+// correct the head's movement since then, so the model stays put on the table.
+
+#include "xr_util.hpp"
+#include "adaptive_quality.hpp"
+#include "frame_pacing.hpp"
+
+#include <EGL/eglext.h>
+#include <android/hardware_buffer.h>
+
+#include <array>
+#include <cstdint>
+#include <chrono>
+#include <mutex>
+#include <utility>
+#include <vector>
+
+namespace quest {
+
+// One game frame's view: same layout as QuestStereoFrame in src/port/quest_stereo.cpp.
+struct StereoFrame {
+  uint32_t image;
+  uint64_t tag;
+  float eyeView[2][16]; // room (STAGE) -> eye, row-major
+  float eyeProj[2][16]; // eye -> GX clip space (z/w from -1 at near to 0 at far)
+  float world[16];      // game world -> room
+  float hudWidth, hudHeight;
+  uint32_t eyeWidth, eyeHeight; // drawn part of each eye's half (dynamic resolution)
+  uint32_t generation;          // of the images the lease is in
+  uint32_t drawHud;             // 1: draw the interface into its image this frame
+};
+
+class StereoView {
+public:
+  // `scale`: the eye images' size relative to the headset's recommended one.
+  bool init(XrInstance instance, XrSession session, XrSystemId system, EGLDisplay display, float scale);
+  void destroy();
+
+  // XR thread, each frame: where the eyes are, and the model (game world ->
+  // room: `world` pose, `scale` meters per game unit). Disabled: the game draws no eyes.
+  void update(const XrView (&views)[2], const XrPosef& world, float scale, bool enabled, float hudWidth = 0.76f, float hudHeight = 0.57f);
+  // XR thread: the newest image the game drew, copied into the swapchain; the
+  // layer showing it (or the previous one), nullptr before the first.
+  const XrCompositionLayerBaseHeader* layer(XrSpace space, const void* next);
+  // The game's interface (scores, messages) as a quad at `pose` in `space`:
+  // quest_xr.cpp stands it at the back of the model. nullptr while hidden.
+  const XrCompositionLayerBaseHeader* hud_layer(XrSpace space, const XrPosef& pose, XrExtent2Df size,
+                                                const void* next);
+  // The screen the interface shows on, like a stadium's: a dark face with a
+  // bezel around the interface's quad (same pose and size), to submit just
+  // before hud_layer. nullptr while the interface is hidden.
+  const XrCompositionLayerBaseHeader* hud_screen_layer(XrSpace space, const XrPosef& pose, XrExtent2Df size);
+  // The bezel, as a part of the interface's width on each side.
+  static constexpr float kHudBezel = 0.025f;
+
+  // Game thread (PartyBoardQuest_StereoFrame): an image and the view to draw it with.
+  bool game_frame(StereoFrame& out);
+  // Game thread: the images, to register with Aurora: `count` eye images
+  // (width x height, the eyes side by side) and as many HUD images.
+  bool images(void** eyeBuffers, void** hudBuffers, uint32_t capacity, uint32_t& count, uint32_t& width,
+              uint32_t& height, uint32_t& generation, uint32_t& hudWidth, uint32_t& hudHeight);
+  uint32_t generation() const;
+  // XR thread, at start and when the runtime says it changed: the lenses'
+  // visible outline (XR_KHR_visibility_mask), turned into rectangles of the
+  // eyes' images the lenses never show at the next update() (it needs the
+  // eyes' fields of view).
+  void load_hidden_area(bool available);
+  // Game thread: eye's hidden rectangles ({x0, y0, x1, y1}, 0..1 of the
+  // eye's rectangle from its top-left); returns their count, and `version`,
+  // which changes with them. capacity 0: the version only.
+  uint32_t hidden_area(uint32_t eye, float* rects, uint32_t capacity, uint32_t& version) const;
+  // Aurora's render thread: the frame drawing `image` went to the GPU.
+  void submitted(uint32_t image, uint64_t tag, int syncFd, bool hasWorld = false);
+  void set_screen_required(bool required);
+  void set_board_mode(bool board);
+  // XR_KHR_composition_layer_depth, once the extension is enabled (after
+  // init): a depth swapchain beside the eyes' images. Each new image gets the
+  // depth of the plane the model stands on (set_depth_plane), drawn by this
+  // thread: the compositor can then correct the head's translation too, not
+  // only its rotation. Off unless `debug.partyboard.depth_layer 1` (read
+  // every 2 s), until seen on the headset.
+  void enable_depth_layer(XrInstance instance, XrSession session);
+  // XR thread, each frame: the plane's center (stage space, +Y its normal)
+  // and its half size in meters; 0 for none.
+  void set_depth_plane(const XrPosef& center, float halfExtent);
+  bool screen_required() const;
+  // A minigame is on show (the game's 3D world, not a board): quest_xr.cpp
+  // stands it where the board's screen is.
+  bool minigame_mode() const;
+  bool world_only() const;
+  bool world_visible() const { return mShown && mShownHasWorld; }
+  // A camera with no view never enqueues GPU work: return its lease explicitly.
+  void cancelled(uint32_t image, uint64_t tag);
+
+  // XR thread, each frame before update(): the display time being prepared,
+  // and the display's period.
+  void set_frame_time(XrTime time, XrDuration period = 0);
+  // Game thread, its frame done: when to start the next one (steady-clock
+  // nanoseconds), on the display's schedule; 0 when not paced (FramePacer).
+  int64_t next_frame_start(int64_t nowNs, float targetHz);
+  // How far ahead of this frame the game's next image will be seen: measured
+  // from the images already shown, for the eye poses given to the game.
+  XrDuration prediction() const;
+  // The flat screen is not on show (the model replaces it): the game skips presenting it.
+  void set_screen_hidden(bool hidden);
+  bool screen_hidden() const;
+  void set_quality_sample(const QualitySample& sample);
+  void set_quality_cap(float recommendedScale);
+
+private:
+  friend struct StereoViewTestAccess;
+  enum class State { Free, Drawing, Ready, Copying };
+  struct Slot {
+    AHardwareBuffer* buffer = nullptr; // the eyes, side by side
+    EGLImageKHR eglImage = EGL_NO_IMAGE_KHR;
+    GLuint texture = 0;
+    AHardwareBuffer* hudBuffer = nullptr; // the interface, drawn by the same frame
+    EGLImageKHR hudEglImage = EGL_NO_IMAGE_KHR;
+    GLuint hudTexture = 0;
+    State state = State::Free;
+    uint64_t tag = 0;
+    int fence = -1;
+    bool hasWorld = false;
+    bool board = false;
+    GLsync copyFence = nullptr;
+    XrView views[2]{};
+    uint32_t renderWidth = 0, renderHeight = 0; // drawn part of each eye's half
+    XrTime leaseTime = 0;                       // the XR frame the game took it in
+    int64_t startNs = 0;                        // its frame's paced start, 0 when not paced
+    int64_t dueNs = 0;                          // the look it is for, 0: as soon as finished
+    bool hud = false;                           // its interface image was drawn
+    int64_t leaseNs = 0, submitNs = 0;          // steady clock: lent to the game, sent to the GPU
+  };
+  // Each image's way through the ring ("Stereo pipeline", every 2 s): the
+  // game recording it (lease -> submit), the GPU drawing it (submit -> its
+  // fence), waiting for its look (fence -> copy); and when the game finds no
+  // free image, where the images were (drawing, ready, copying).
+  struct Stage {
+    double sum = 0, max = 0;
+    uint32_t count = 0;
+    void add(int64_t ns) {
+      if (ns <= 0) return;
+      const double ms = ns / 1e6;
+      sum += ms;
+      max = std::max(max, ms);
+      ++count;
+    }
+    double avg() const { return count != 0 ? sum / count : 0; }
+  };
+  Stage mStageRecord, mStageGpu, mStageWait, mStageTotal;
+  uint32_t mFullDrawing = 0, mFullReady = 0, mFullCopying = 0;
+
+  // Dynamic resolution, once a second (caller holds mMutex).
+  void adapt_resolution();
+  // The drawn eye size for a render scale, and the ring's images at a size
+  // (XR thread, GL context current, every image free).
+  std::pair<uint32_t, uint32_t> eye_size(float renderScale) const;
+  bool allocate_images(uint32_t eyeWidth, uint32_t eyeHeight, uint32_t hudWidth = 0);
+  void free_images();
+  bool resize_ready();
+  void free_images(std::vector<Slot>& slots);
+
+public:
+  // The eyes' resolution, in % of the headset's recommended size.
+  float resolution_percent() const;
+  std::array<float, 3> render_info() const; // actual eye width/height, fresh world Hz
+
+private:
+
+  void release_slot(Slot& slot);
+  Slot* newest_completed(int64_t lookNs); // Caller holds mMutex.
+
+  EGLDisplay mDisplay = EGL_NO_DISPLAY;
+  XrInstance mInstance = XR_NULL_HANDLE;
+  XrSession mSession = XR_NULL_HANDLE;
+  XrSwapchain mSwapchain = XR_NULL_HANDLE;
+  XrSwapchain mHudSwapchain = XR_NULL_HANDLE;
+  std::vector<XrSwapchainImageOpenGLESKHR> mHudImages;
+  uint32_t mHudPixelsWidth = 1600, mHudPixelsHeight = 1200;
+  bool mHudShown = false;
+  XrCompositionLayerQuad mHudLayer{XR_TYPE_COMPOSITION_LAYER_QUAD};
+  // The screen behind the interface: one static image, drawn once.
+  XrSwapchain mHudScreenSwapchain = XR_NULL_HANDLE;
+  // The depth layer (enable_depth_layer).
+  bool draw_depth(const Slot& slot);
+  XrSwapchain mDepthSwapchain = XR_NULL_HANDLE;
+  std::vector<XrSwapchainImageOpenGLESKHR> mDepthImages;
+  GLuint mDepthFbo = 0, mDepthProgram = 0;
+  GLint mDepthMvpLocation = -1, mDepthCornersLocation = -1;
+  bool mDepthWanted = false, mDepthShown = false;
+  XrPosef mDepthPlane{{0, 0, 0, 1}, {0, 0, 0}};
+  float mDepthPlaneHalf = 0;
+  XrCompositionLayerDepthInfoKHR mDepthInfos[2]{};
+  XrCompositionLayerQuad mHudScreenLayer{XR_TYPE_COMPOSITION_LAYER_QUAD};
+  void create_hud_screen();
+  std::vector<XrSwapchainImageOpenGLESKHR> mSwapchainImages;
+  uint32_t mEyeWidth = 0; // an eye's half of the swapchain: the largest drawn size
+  uint32_t mEyeHeight = 0;
+  uint32_t mRecommendedEyeWidth = 0;
+  uint32_t mImageEyeWidth = 0, mImageEyeHeight = 0; // the ring's images: the drawn size or larger
+  bool mResizePending = false;
+  ImageSizePolicy mImageSize;  // when the images follow the drawn size (adapt_resolution())
+  uint32_t mResizeCount = 0;   // the controller's, for the log
+  std::chrono::steady_clock::time_point mResizeRetryAt{}; // after a failed allocation
+  uint32_t mDesiredHudWidth = 1600;
+  int64_t mSwapchainFormat = 0;
+
+  mutable std::mutex mMutex;
+  // The ring of images the game draws into: 4, or debug.partyboard.ring
+  // (2 to 6) read at start. A deeper ring lets the GPU start an image while
+  // the last ones wait to be shown or copied. With 3, the Toad board drew 61
+  // new images/s asking for 120 (the ring full 117 times in 2 s, the GPU 82%
+  // busy); with 4, 80 (Quest 3, 2026-10-02).
+  std::vector<Slot> mSlots;
+  size_t mSlotCount = 4;
+  uint32_t mGeneration = 0;
+  uint64_t mNextTag = 1;
+  uint32_t mLeaseCount = 0, mRingFullCount = 0, mPresentedCount = 0;
+  uint32_t mNewWorldCount = 0, mNewHudCount = 0;
+  float mWorldRate = 0;
+  double mCopyMaxMs = 0;
+  double mAcquireMaxMs = 0;
+  std::array<double, 2> mDestinationAcquireMaxMs{}; // world, HUD; XR calls only
+  std::array<double, 2> mDestinationWaitMaxMs{};
+  struct CopyTimer { GLuint queries[2]{}; bool pending = false; };
+  std::array<CopyTimer, 4> mCopyTimers;
+  bool mGpuTiming = false;
+  double mCopyGpuMaxMs = -1;
+  uint32_t mCopyGpuSamples = 0;
+  std::chrono::steady_clock::time_point mStatsAt = std::chrono::steady_clock::now();
+  bool mEnabled = false;
+  bool mScreenRequired = false;
+  bool mBoardMode = false;
+  bool mShownIsBoard = false;
+  float mHudWidth = 0.76f, mHudHeight = 0.57f;
+  XrView mViews[2]{};
+  // The lenses' visible outline per eye (tangents at z = -1), or else their
+  // hidden triangles (3 points each), waiting for the eyes' fields of view;
+  // then the hidden rectangles (hidden_area()).
+  std::vector<XrVector2f> mVisibleOutline[2];
+  std::vector<XrVector2f> mHiddenTriangles[2];
+  bool mHiddenPending = false;
+  std::vector<float> mHiddenRects[2];
+  uint32_t mHiddenVersion = 0;
+  float mWorld[16]{};
+
+  // Dynamic resolution: the drawn part of the eyes' images, 0.5 to 1 of
+  // their size, lowered when the GPU falls behind 120 Hz, raised back slowly.
+  float mRenderScale = 0.8f; // of 125% of the recommended size: 100% of it, then up as the GPU allows
+  float mMaxScale = 1.0f;    // the images' size, relative to the recommended one
+  AdaptiveQuality mQuality;
+  QualitySample mQualitySample;
+  uint32_t mAdaptLeases = 0, mAdaptRingFull = 0, mCalmSeconds = 0;
+  // The intervals between the game's image requests this second, and the
+  // hitches counted in the last one (adapt_resolution()).
+  std::chrono::steady_clock::time_point mLastRequestAt{};
+  std::vector<float> mRequestIntervals;
+  uint32_t mLastSlow = 0;
+  std::chrono::steady_clock::time_point mAdaptAt = std::chrono::steady_clock::now();
+  // Pose prediction: this XR frame's display time, and the measured delay
+  // between taking an image and showing it (moving average, nanoseconds).
+  XrTime mFrameTime = 0;
+  double mLatencyNs = 0;
+  double mLatencyMinMs = 0, mLatencyMaxMs = 0; // this stats window
+  // The game's frames on the display's schedule (next_frame_start()), and
+  // what shows it works: display frames each new image stayed on show (1, 2,
+  // 3, 4 or more), this stats window.
+  FramePacer mPacer;
+  XrDuration mPeriodNs = 0;
+  bool mPacing = true;             // debug.partyboard.xr_pacing=0 turns it off
+  bool mStartGiven = false;        // a start the next lease belongs to
+  int64_t mGivenStartNs = 0, mGivenDueNs = 0;
+  uint32_t mFramesSinceNew = 0;
+  bool mHoldCounted = false;       // an image shown since the layer came back
+  std::chrono::steady_clock::time_point mLastLayerAt{};
+  std::array<uint32_t, 4> mHolds{};
+  bool mScreenHidden = false;
+  // The interface is copied at 30 Hz: text and scores need no more.
+  std::chrono::steady_clock::time_point mHudCopiedAt{};
+  // The interface is drawn every other image the game makes (30 Hz at 60),
+  // the rate it is copied at: `adb shell setprop debug.partyboard.hud_rate
+  // full` draws it in every image (read every 2 s).
+  bool mHudEveryImage = false;
+  bool mHudLastLease = false; // the previous lease drew it
+
+  // The last image shown, resubmitted until the game draws the next one.
+  uint64_t mPresentedTag = 0;
+  bool mShown = false;
+  bool mShownHasWorld = false;
+  XrView mShownViews[2]{};
+  uint32_t mShownWidth = 0, mShownHeight = 0;
+  XrCompositionLayerProjectionView mProjectionViews[2]{};
+  XrCompositionLayerProjection mLayer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+};
+
+// The one the exported functions (PartyBoardQuest_Stereo*) reach; null without a session.
+extern StereoView* g_stereoView;
+
+} // namespace quest
