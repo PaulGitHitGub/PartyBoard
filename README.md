@@ -100,7 +100,8 @@ Saves and settings are kept in `~/Library/Application Support/MarioPartyRD/Party
 
 - A native PC port, not an emulator.
 - Widescreen with an adaptive HUD, or locked 4:3.
-- Higher internal resolution, higher frame rates, VSync, fullscreen or windowed.
+- Any resolution, from the original 640×480 up to 4K and beyond (Settings → Video → Internal Resolution). It works online too, and each player can pick their own.
+- Higher frame rates, VSync, fullscreen or windowed.
 - Modern controllers and keyboard, with remapping.
 - Extras such as unlock-all-minigames, a speedrun mode and RetroAchievements.
 
@@ -134,7 +135,7 @@ with the logs from **F1 → Send Logs**.
 - **Online needs identical files.** The lobby turns away players whose PartyBoard version or disc image file
   differs, even if it's the same game in another format.
 - **No rejoining online.** If a computer drops out, the game stops for everyone after 2 minutes.
-- Online games run at 60 FPS and in 4:3; higher frame rates and widescreen are offline only. Full resolution and the upscaled textures work online too.
+- Online games run at 60 FPS and in 4:3; higher frame rates and widescreen are offline only. Resolution and the upscaled textures work online too.
 - Phones: up to 4 for now. Support for 8 phones comes in an update.
 
 ## Building from source
