@@ -134,7 +134,7 @@ with the logs from **F1 → Send Logs**.
 - **Online needs identical files.** The lobby turns away players whose PartyBoard version or disc image file
   differs, even if it's the same game in another format.
 - **No rejoining online.** If a computer drops out, the game stops for everyone after 2 minutes.
-- Online games run at 60 FPS, in 4:3, at the original 640×480 resolution.
+- Online games run at 60 FPS and in 4:3; higher frame rates and widescreen are offline only. Full resolution and the upscaled textures work online too.
 - Phones: up to 4 for now. Support for 8 phones comes in an update.
 
 ## Building from source
