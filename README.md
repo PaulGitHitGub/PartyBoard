@@ -18,8 +18,6 @@ PartyBoard Beta is based on [PartyBoard](https://github.com/mariopartyrd/partybo
 Mario Party 4. It adds 8-player parties, online play between Macs and PCs, and phones as controllers.
 
 > [!IMPORTANT]
-> **This repository is private.** To download, you need a free GitHub account and an accepted invitation from the owner.
->
 > **The game itself is not included.** You need your own **Mario Party 4** GameCube disc image. See [What you need](#what-you-need).
 
 ## Download
