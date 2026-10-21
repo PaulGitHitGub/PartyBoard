@@ -29,6 +29,11 @@ public:
     bool focus() override;
 
     void add_tab(const Rml::String &title, TabCallback callback);
+    // A tab shown only when it applies (the online drop vote's tab): hidden tabs
+    // are disabled too, so focus skips them.
+    void set_tab_shown(int index, bool shown);
+    void set_tab_title(int index, const Rml::String &title);
+    int tab_count() const { return static_cast<int>(mTabs.size()); }
     bool set_active_tab(int index);
     void refresh_active_tab();
     bool focus_tab(int index);

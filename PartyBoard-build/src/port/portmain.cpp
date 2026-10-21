@@ -50,7 +50,6 @@
 #include <port/settings.h>
 #include <port/netplay_runtime.h>
 #include <port/port_version.h>
-#include <port/retroachievements.h>
 
 #include <aurora/dvd.h>
 #include <aurora/lib/logging.hpp>
@@ -440,7 +439,7 @@ static std::filesystem::path calculate_config_path() {
 
     // On Android this is the app's internal files directory (Context.getFilesDir()):
     // private, kept across updates, removed only on uninstall or "Clear storage".
-    // Config, memory cards, achievements and the pipeline cache all live there.
+    // Config, memory cards and the pipeline cache all live there.
     char* result = SDL_GetPrefPath("MarioPartyRD", "Party Board");
     if (!result) {
         PartyBoardMainLog.error("Unable to get PrefPath: {}", SDL_GetError());
@@ -961,6 +960,13 @@ extern "C" int port_main(int argc, char* argv[]) {
                then started with the menu open, ignoring every controller
                until someone pressed B or Esc. */
             screen.hide(true);
+            /* WindowSmall::hide only starts the fade-out; the document is closed when its
+               Transitionend arrives. Boot follows straight away, and when that event never
+               came (seen on Windows, first launch of a fresh install) the finished box
+               stayed on the document stack and swallowed F1 (each press toggled the box,
+               so the menu with Pause/Settings/Quit could not open). Close it now. */
+            screen.Document::hide(true);
+            PartyBoardMainLog.info("Shader precompile screen closed at once (no fade), so F1 reaches the menu");
             PartyBoardMainLog.info("Precompiled {} of {} shader pipelines before boot", total - remaining, total);
             if (exitRequested) {
                 fflush(stdout);
@@ -1027,8 +1033,6 @@ extern "C" int port_main(int argc, char* argv[]) {
         PartyBoard_NetplayTrace(diagnostic);
     }
     LanguageInit();
-    // After the disc is known: the achievement set is chosen by its hash.
-    PartyBoard_RAInit();
 
     // OSInit();
 
@@ -1055,7 +1059,6 @@ extern "C" int port_main(int argc, char* argv[]) {
     if (sndIsInstalled()) {
         sndQuit();
     }
-    PartyBoard_RAShutdown();
 
 #ifdef PARTY_BOARD_DISCORD
     partyboard::discord::shutdown();

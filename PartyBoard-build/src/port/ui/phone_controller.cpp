@@ -158,7 +158,6 @@ struct Snapshot {
     std::string problem;
 #endif
     std::string url;          // empty when this Mac has no network address
-    std::string bookmarkUrl;  // by Mac name, works on any Wi-Fi
     // The bridge connects within seconds of the game opening its input
     // socket; still nothing after this long means it failed to start.
     bool helperMissing = false;
@@ -187,9 +186,6 @@ Snapshot read_snapshot()
     s.helperMissing = s.state == -1 && SDL_GetTicks() > kHelperStartupMs;
     if (const std::string ip = local_ipv4(); !ip.empty()) {
         s.url = fmt::format("http://{}:{}/?k={}", ip, port, code);
-    }
-    if (const char *host = env("PARTYBOARD_PHONE_HOST")) {
-        s.bookmarkUrl = fmt::format("http://{}.local:{}/?k={}", host, port, code);
     }
     return s;
 }
@@ -404,7 +400,9 @@ void PhoneControllerPanel::refresh()
     const bool showCode = s.configured && !s.url.empty() && !s.helperMissing;
     const auto display = showCode ? Rml::Style::Display::Block : Rml::Style::Display::None;
     mQrTile->SetProperty(Rml::PropertyId::Display, display);
-    mLink->SetProperty(Rml::PropertyId::Display, display);
+    // The link itself stays out of the panel (user's choice: the QR code does
+    // the same); it is in game.log and "Phone Controller Link.txt".
+    mLink->SetProperty(Rml::PropertyId::Display, Rml::Style::Display::None);
     if (showCode && s.url != mShownUrl) {
         mQrImage->SetAttribute("src", make_qr_texture(s.url));
         set_text(mLink, s.url);
@@ -440,9 +438,10 @@ void PhoneControllerPanel::refresh()
         set_text(mHelp, "If it still doesn't start, see game.log in the newest folder in "
                         "%APPDATA%\\MarioPartyRD\\Party Board\\logs.");
     } else {
-        set_text(mLinkIntro, "Scan with your phone's camera, or open this link:");
+        set_text(mLinkIntro, "Scan with your phone's camera.");
         set_text(mHelp, "Phones must be on the same Wi-Fi as this PC. If Windows asks about Python, allow it on "
-                        "private networks. Up to four phones can join; tap the player number on a phone to switch.");
+                        "private networks. Up to four phones can join (eight in an 8-player party); tap the player "
+                        "number on a phone to switch.");
     }
 #else
     if (!s.configured && s.enabled && s.needsPython) {
@@ -464,14 +463,11 @@ void PhoneControllerPanel::refresh()
         set_text(mHelp, "If it still doesn't start, the reason is in bridge.log in the newest folder under "
                         "~/Library/Logs/PartyBoard.");
     } else {
-        set_text(mLinkIntro, "Scan with your iPhone camera, or open this link in Safari:");
-        Rml::String help = "Phones need to be on the same Wi-Fi as this Mac. Up to four can join; each takes the next "
-                           "free player, and tapping the player number on a phone switches it to another free one. "
-                           "Player 1 also stays on the keyboard.";
-        if (!s.bookmarkUrl.empty()) {
-            help += fmt::format(" For a Home Screen bookmark that works on any Wi-Fi, use {}", s.bookmarkUrl);
-        }
-        set_text(mHelp, help);
+        set_text(mLinkIntro, "Scan with your phone's camera.");
+        // The by-name link for other Wi-Fi networks stays out of the panel
+        // (user's choice); it is in "Phone Controller Link.txt".
+        set_text(mHelp, "Phones must be on the same Wi-Fi as this Mac. Up to four phones can join (eight in an "
+                        "8-player party); tap the player number on a phone to switch.");
     }
 #endif
 }

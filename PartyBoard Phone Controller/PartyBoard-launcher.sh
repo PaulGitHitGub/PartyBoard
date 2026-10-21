@@ -7,15 +7,64 @@
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GAME="$HERE/PartyBoard-bin"
 CONTROLLER="$HERE/../Resources/PhoneController"
-SUPPORT="$HOME/Library/Application Support/MarioPartyRD/Party Board"
-LOGROOT="$HOME/Library/Logs/PartyBoard"
-LOGDIR="$LOGROOT/$(date +%Y-%m-%d_%H-%M-%S)"
+# Test launches must keep wrapper files away from the player's profile and logs.
+# Lobby test helpers clear the game profile variable before relaunching. This
+# separate explicit launcher override survives that handoff without changing
+# the game's NETPLAY_TEST_PROFILE selection.
+TEST_MODE=0
+TEST_SUPPORT=""
+if [ "${PARTYBOARD_LAUNCHER_TEST_PROFILE+x}" = x ]; then
+  TEST_MODE=1
+  TEST_SUPPORT="$PARTYBOARD_LAUNCHER_TEST_PROFILE"
+elif [ "${PARTYBOARD_TEST_PROFILE+x}" = x ]; then
+  TEST_MODE=1
+  TEST_SUPPORT="$PARTYBOARD_TEST_PROFILE"
+fi
+if [ "$TEST_MODE" = 1 ]; then
+  case "$TEST_SUPPORT" in
+    /*) ;;
+    *) echo "PartyBoard test profile must be an absolute isolated path." >&2; exit 64 ;;
+  esac
+  case "$TEST_SUPPORT" in
+    /|*/|*//*|*/./*|*/.|*/../*|*/..)
+      echo "PartyBoard test profile must be a normalized isolated directory." >&2; exit 64 ;;
+  esac
+  for protected in "$HOME/Library/Application Support/MarioPartyRD/Party Board" "$HOME/Library/Logs/PartyBoard"; do
+    case "$TEST_SUPPORT/" in
+      "$protected/"*) echo "PartyBoard test profile overlaps normal user data." >&2; exit 64 ;;
+    esac
+    case "$protected/" in
+      "$TEST_SUPPORT/"*) echo "PartyBoard test profile overlaps normal user data." >&2; exit 64 ;;
+    esac
+  done
+  # Reject symlink components before creating or reading anything in the profile.
+  prefix=""
+  IFS=/ read -r -a profile_parts <<< "$TEST_SUPPORT"
+  for part in "${profile_parts[@]}"; do
+    [ -n "$part" ] || continue
+    prefix="$prefix/$part"
+    if [ -L "$prefix" ]; then
+      echo "PartyBoard test profile must not contain symlink components." >&2; exit 64
+    fi
+  done
+  SUPPORT="$TEST_SUPPORT"
+  LOGROOT="$SUPPORT/launcher-logs"
+  export PARTYBOARD_SESSION_LOG_ROOT="$LOGROOT"
+  mkdir -p "$LOGROOT" || exit 1
+  LOGDIR=$(mktemp -d "$LOGROOT/$(date +%Y-%m-%d_%H-%M-%S).XXXXXX") || exit 1
+else
+  SUPPORT="$HOME/Library/Application Support/MarioPartyRD/Party Board"
+  LOGROOT="$HOME/Library/Logs/PartyBoard"
+  LOGDIR="$LOGROOT/$(date +%Y-%m-%d_%H-%M-%S)"
+fi
 GAME_PORT=7700
 HTTP_PORT=48765   # uncommon, to stay clear of local dev servers (8765 is a popular one)
 
 mkdir -p "$LOGDIR" "$SUPPORT"
-# Keep the newest 20 sessions.
-ls -1d "$LOGROOT"/*/ 2>/dev/null | sort -r | tail -n +21 | while read -r old; do rm -rf "$old"; done
+if [ "$TEST_MODE" = 0 ]; then
+  # Keep the newest 20 sessions.
+  ls -1d "$LOGROOT"/*/ 2>/dev/null | sort -r | tail -n +21 | while read -r old; do rm -rf "$old"; done
+fi
 
 export PARTYBOARD_INPUT_LOG=1
 

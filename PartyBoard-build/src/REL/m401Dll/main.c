@@ -2352,6 +2352,14 @@ void fn_2_8E74(omObjData *object)
     Work8E74 *temp_r31;
     object->data = HuMemDirectMallocNum(HEAP_SYSTEM, sizeof(Work8E74), MEMORY_DEFAULT_NUM);
     temp_r31 = object->data;
+    /* The hidden effect updates once before fn_2_91AC supplies its centre.
+       Reused heap bytes here moved it differently on Mac and Windows. */
+    temp_r31->unk18.x = 0;
+    temp_r31->unk18.y = 0;
+    temp_r31->unk18.z = 0;
+#ifdef TARGET_PC
+    OSReport("[m401] orbit effect: initialized hidden centre before first update\n");
+#endif
     temp_r31->unk24.x = 6;
     temp_r31->unk24.z = 90;
     temp_r31->unk24.y = 100;

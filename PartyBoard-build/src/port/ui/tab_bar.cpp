@@ -93,6 +93,30 @@ TabBar::TabBar(Rml::Element *parent, Props props)
     });
 }
 
+void TabBar::set_tab_shown(int index, bool shown)
+{
+    if (index < 0 || index >= static_cast<int>(mTabs.size())) {
+        return;
+    }
+    auto &button = mTabs[index].button;
+    button.set_disabled(!shown);
+    if (shown) {
+        button.root()->RemoveProperty(Rml::PropertyId::Display);
+    }
+    else {
+        button.root()->SetProperty(Rml::PropertyId::Display, Rml::Property(Rml::Style::Display::None));
+    }
+}
+
+void TabBar::set_tab_title(int index, const Rml::String &title)
+{
+    if (index < 0 || index >= static_cast<int>(mTabs.size()) || mTabs[index].title == title) {
+        return;
+    }
+    mTabs[index].title = title;
+    mTabs[index].button.set_text(title);
+}
+
 bool TabBar::focus()
 {
     if (mProps.selectedTabIndex >= 0 && mProps.selectedTabIndex < mTabs.size()) {

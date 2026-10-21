@@ -36,14 +36,6 @@ ReadDataStat[DATA_MAX_READSTAT + 1]; // to avoid bug
 ReadDataStat[DATA_MAX_READSTAT];
 #endif
 
-#ifdef TARGET_PC
-/* For RetroAchievements (src/port/retroachievements_memory.cpp). */
-s32 PartyBoard_RAReadStatDirId(s32 slot)
-{
-    return ReadDataStat[slot].dirId;
-}
-#endif
-
 void HuDataInit(void)
 {
     s32 i = 0;
@@ -667,7 +659,6 @@ static void *HuDataDecodeIt(void *bufP, s32 bufOfs, s32 num, HeapID heap)
     }
     return dest;
 }
-
 
 void *HuDataReadNumHeapShortForce(s32 dataNum, s32 num, HeapID heap)
 {

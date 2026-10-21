@@ -320,6 +320,23 @@ void BoardLotteryKill(void)
     }
 }
 
+s32 BoardLotteryActive(void)
+{
+    return lotteryProc != NULL;
+}
+
+s32 BoardLotteryCrankActive(void)
+{
+    /* The turning motion is created only inside the ball-machine game. */
+    return lotteryProc != NULL && turnMot != -1;
+}
+
+s32 BoardLotteryScratchActive(void)
+{
+    /* Model 4 is only the scratch-card hand. No game state is changed here. */
+    return lotteryProc != NULL && lotteryMdl[4] != -1;
+}
+
 static void DestroyLottery(void)
 {
     s32 i;
@@ -494,6 +511,18 @@ static void ExecLottery(void)
     }
     PayEnterFee(var_r27);
     var_r25 = BoardRandMod(100) & 0xFF;
+#if defined(PARTYBOARD_HD_BETA)
+    if (getenv("PARTYBOARD_TEST_LOTTERY_SCRATCH")) {
+        var_r25 = 100;
+        OSReport("[lottery] test aid: scratch card selected for player %d, port %d\n",
+            (int)temp_r31 + 1, (int)GWPlayer[temp_r31].port + 1);
+    }
+    else if (getenv("PARTYBOARD_TEST_LOTTERY_BALL")) {
+        var_r25 = 0;
+        OSReport("[lottery] test aid: ball machine selected for player %d, port %d\n",
+            (int)temp_r31 + 1, (int)GWPlayer[temp_r31].port + 1);
+    }
+#endif
     if (var_r25 < 50) {
         ExecBallGame();
     }
@@ -863,6 +892,17 @@ static void ExecBallGame(void)
         if (var_r24 != 0 && BoardModelMotionTimeGet(lotteryMdl[1]) < 2.0f) {
             var_r24 = 0;
         }
+#ifdef TARGET_PC
+        {
+            /* Always on, once a second: what the crank loop sees (8-player walk stall, 2026-10-19). */
+            static s32 lotteryTraceTick;
+            if ((lotteryTraceTick++ % 60) == 0) {
+                OSReport("[lottery] crank: player %d (%s, port %d) stick %d,%d speed %.3f push %.3f turns %d done %d motion %.1f/%.1f\n",
+                    (int)temp_r27, GWPlayer[temp_r27].com ? "COM" : "person", (int)GWPlayer[temp_r27].port, (int)spB, (int)spA,
+                    var_f28, var_f27, (int)var_r21, (int)var_r22, BoardModelMotionTimeGet(lotteryMdl[1]), temp_f24);
+            }
+        }
+#endif
         if (var_r22 == 0) {
             var_r17 = spB;
             sp9 = spA;
@@ -1082,6 +1122,11 @@ static void ExecScratchTicket(s32 arg0)
     }
     temp_r27 = HuAudFXPlay(0x335);
     HuAudFXVolSet(temp_r27, 0);
+#ifdef TARGET_PC
+    OSReport("[lottery] scratch: player %d, port %d started (%dx%d mask)\n",
+        GWSystem.player_curr + 1, GWPlayer[GWSystem.player_curr].port + 1,
+        temp_r30->unk08->bmp->sizeX, temp_r30->unk08->bmp->sizeY);
+#endif
     while (1) {
         HuPrcVSleep();
         if (TicketUpdate(temp_r30->unk08->bmp, &sp24, temp_r27) != 0) {
@@ -1092,6 +1137,10 @@ static void ExecScratchTicket(s32 arg0)
         }
     }
     HuAudFXStop(temp_r27);
+#ifdef TARGET_PC
+    OSReport("[lottery] scratch: player %d, port %d finished\n",
+        GWSystem.player_curr + 1, GWPlayer[GWSystem.player_curr].port + 1);
+#endif
     while (1) {
         HuPrcVSleep();
         if (sp24.y >= 480.0f) {
@@ -1446,6 +1495,16 @@ static BOOL ScratchTicketCheckDone(ANIMBMP *arg0)
             }
         }
     }
+#ifdef TARGET_PC
+    {
+        static u32 traceTicks;
+        if (++traceTicks % 60 == 0 || var_r29 >= arg0->sizeX * arg0->sizeY - 300) {
+            OSReport("[lottery] scratch: player %d, port %d cleared %d of %d pixels\n",
+                GWSystem.player_curr + 1, GWPlayer[GWSystem.player_curr].port + 1,
+                var_r29, arg0->sizeX * arg0->sizeY);
+        }
+    }
+#endif
     if (var_r29 >= arg0->sizeX * arg0->sizeY - 300) {
         return TRUE;
     }

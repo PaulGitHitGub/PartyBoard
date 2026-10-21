@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace partyboard::netplay {
 
@@ -19,16 +20,25 @@ namespace partyboard::netplay {
 // 10: one packet carries every seat of the sending computer (several people on
 // one computer, docs/ONLINE_MULTISEAT.md): byte 148 is the seat count, then 12
 // bytes (input + pause word) per extra seat, then the checksum.
-constexpr std::uint16_t kProtocolVersion = 10; // 8: online pause word
+// 11: continue without a dropped player (docs/ONLINE_DROP_VOTE.md). Every seat's
+// input carries a command byte (its controller is gone, its vote to make a seat a
+// computer player), in the frame's input so every copy reads it on the same frame:
+// byte 149 for the first seat, and the extra seat block grows to 16 bytes (input,
+// pause word, command, 3 zero bytes). A new packet type, Control, carries the vote
+// to continue without a computer that went silent and the frame the others agreed
+// to switch its seats at (the game is stopped then, so this cannot ride on input).
+constexpr std::uint16_t kProtocolVersion = 11; // 8: online pause word
 // Size with one seat; each further seat of the same computer adds kNetplayExtraSeatSize.
 constexpr std::size_t kNetplayPacketSize = 156;
-constexpr std::size_t kNetplayExtraSeatSize = 12;
+constexpr std::size_t kNetplayExtraSeatSize = 16;
 // Eight: the 8-player party seats eight, and rollback.hpp sizes every input
 // array to kMaxPlayers. A static_assert in the implementation keeps the two
 // numbers married; this one exists so the header does not have to drag the
 // rollback C++ header in behind it.
 constexpr std::size_t kMaxNetplayPeers = 8;
-enum class PacketType : std::uint8_t { Input = 1, Retransmit = 2, State = 3 };
+enum class PacketType : std::uint8_t { Input = 1, Retransmit = 2, State = 3, Control = 4 };
+// Largest Control payload (kept well under the Tailscale MTU of 1280 bytes).
+constexpr std::size_t kNetplayMaxControlSize = 1100;
 
 struct InputPacket {
     std::uint32_t sessionId = 0;
@@ -52,6 +62,13 @@ struct InputPacket {
     std::uint8_t seats = 1;
     std::array<PartyBoardRollbackInput, kMaxNetplayPeers - 1> extraInput {};
     std::array<std::uint32_t, kMaxNetplayPeers - 1> extraPause {};
+    // Protocol 11: one command byte per seat this packet speaks for (index k =
+    // seat player + k), part of that frame's input (see netplay_runtime.cpp).
+    std::array<std::uint8_t, kMaxNetplayPeers> command {};
+    // Protocol 11, type Control only: the drop-vote payload (netplay_runtime.cpp
+    // encodes and reads it); the other fields above are unused then, except
+    // sessionId, sequence and player.
+    std::vector<std::uint8_t> control;
 };
 
 class UdpTransport {
@@ -105,6 +122,7 @@ public:
     int peerRoundTripMs(std::uint8_t player) const;
 
 private:
+    void sendPingIfDue(std::uint8_t player);
     struct Impl;
     std::unique_ptr<Impl> mImpl;
 };

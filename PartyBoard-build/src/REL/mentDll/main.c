@@ -879,19 +879,40 @@ void fn_1_85C8(void)
     lbl_1_bss_14[0] = HuAudSeqPlay(0x30);
     var_r31 = fn_1_1434(0, 0, 0);
     HuAudFXPlay(lbl_1_data_0[0][0]);
-    fn_1_59A0(lbl_1_bss_33AC[0].unk_00, 1, 4, 0xF, 1);
-    fn_1_1968(var_r31, 0x1A0000, -1, -1);
-    fn_1_59A0(lbl_1_bss_33AC[0].unk_00, 1, 1, 0xF, 1);
+#ifdef TARGET_PC
+    /* Continuing an online party: no welcome message either, straight to the board. */
+    if (SLOnlinePartyContinuePending()) {
+        OSReport("[netplay] continue: Party Mode's welcome message skipped\n");
+    }
+    else
+#endif
+    {
+        fn_1_59A0(lbl_1_bss_33AC[0].unk_00, 1, 4, 0xF, 1);
+        fn_1_1968(var_r31, 0x1A0000, -1, -1);
+        fn_1_59A0(lbl_1_bss_33AC[0].unk_00, 1, 1, 0xF, 1);
+    }
     fn_1_16AC(var_r31);
     saveExecF = 0;
     if (GWGameStat.party_continue == 1) {
         var_r31 = fn_1_1434(0, 0, 0);
         while (1) {
             fn_1_4D8();
-            fn_1_59A0(lbl_1_bss_33AC[0].unk_00, 1, 4, 0xF, 1);
-            fn_1_1968(var_r31, 0x1A0001, -1, 5);
-            fn_1_59A0(lbl_1_bss_33AC[0].unk_00, 1, 1, 0xF, 1);
-            var_r30 = fn_1_1A5C(0x1E0035, 3, 0);
+#ifdef TARGET_PC
+            /* Continuing an online party (docs/ONLINE_CONTINUE.md): the host chose
+               Continue party in the lobby, so the "continue the game in progress?"
+               question is answered Yes on every copy at once. */
+            if (SLOnlinePartyContinuePending()) {
+                OSReport("[netplay] continue: Party Mode's continue question skipped (Continue party was chosen in the lobby); back to the board\n");
+                var_r30 = 0;
+            }
+            else
+#endif
+            {
+                fn_1_59A0(lbl_1_bss_33AC[0].unk_00, 1, 4, 0xF, 1);
+                fn_1_1968(var_r31, 0x1A0001, -1, 5);
+                fn_1_59A0(lbl_1_bss_33AC[0].unk_00, 1, 1, 0xF, 1);
+                var_r30 = fn_1_1A5C(0x1E0035, 3, 0);
+            }
             if (var_r30 == -1) {
                 fn_1_59A0(lbl_1_bss_33AC[0].unk_00, 1, 4, 0xF, 1);
                 fn_1_1968(var_r31, 0x1A0003, -1, 5);

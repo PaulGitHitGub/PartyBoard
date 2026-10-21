@@ -106,11 +106,51 @@ PartyBoardRollbackInput getInput(const std::uint8_t *source)
     return input;
 }
 
+// Protocol 11 Control packet: bytes 0-7 as any packet (magic, version, type 4,
+// author seat), 8-11 session, 12-15 sequence, 16-17 payload length, the payload,
+// then the FNV checksum.
+constexpr std::size_t kControlHeadSize = 18;
+std::vector<std::uint8_t> encodeControl(const InputPacket &packet)
+{
+    const std::size_t length = (std::min)(packet.control.size(), kNetplayMaxControlSize);
+    std::vector<std::uint8_t> bytes(kControlHeadSize + length + 4);
+    std::copy(kMagic.begin(), kMagic.end(), bytes.begin());
+    put16(bytes.data() + 4, kProtocolVersion);
+    bytes[6] = static_cast<std::uint8_t>(PacketType::Control);
+    bytes[7] = packet.player;
+    put32(bytes.data() + 8, packet.sessionId);
+    put32(bytes.data() + 12, packet.sequence);
+    put16(bytes.data() + 16, static_cast<std::uint16_t>(length));
+    std::copy_n(packet.control.begin(), length, bytes.begin() + kControlHeadSize);
+    const std::size_t body = bytes.size() - 4;
+    put32(bytes.data() + body, packetHash(bytes.data(), body));
+    return bytes;
+}
+
+bool decodeControl(const std::uint8_t *bytes, std::size_t size, InputPacket &packet)
+{
+    if (size < kControlHeadSize + 4) return false;
+    const std::size_t length = get16(bytes + 16);
+    if (length > kNetplayMaxControlSize || size != kControlHeadSize + length + 4
+        || get32(bytes + size - 4) != packetHash(bytes, size - 4) || bytes[7] >= kMaxNetplayPeers) {
+        return false;
+    }
+    packet = InputPacket {};
+    packet.type = PacketType::Control;
+    packet.player = bytes[7];
+    packet.sessionId = get32(bytes + 8);
+    packet.sequence = get32(bytes + 12);
+    packet.control.assign(bytes + kControlHeadSize, bytes + kControlHeadSize + length);
+    return true;
+}
+
 // Protocol 10 layout: bytes 0-147 as in protocol 9 (the lead seat's input and
-// pause word included), byte 148 the seat count, 149-151 zero, then 12 bytes per
-// further seat (8 input + 4 pause), then the FNV checksum of everything before it.
+// pause word included), byte 148 the seat count, 149 the lead seat's command
+// (protocol 11), 150-151 zero, then 16 bytes per further seat (8 input + 4 pause
+// + 1 command + 3 zero), then the FNV checksum of everything before it.
 std::vector<std::uint8_t> encode(const InputPacket &packet)
 {
+    if (packet.type == PacketType::Control) return encodeControl(packet);
     const std::size_t seats = std::clamp<std::size_t>(packet.seats, 1, kMaxNetplayPeers);
     std::vector<std::uint8_t> bytes(packetSizeFor(seats));
     std::copy(kMagic.begin(), kMagic.end(), bytes.begin());
@@ -138,10 +178,12 @@ std::vector<std::uint8_t> encode(const InputPacket &packet)
     for (std::size_t index = 0; index < kSubsystemCount; ++index)
         put32(bytes.data() + 84 + index * 4, packet.state.parts[index]);
     bytes[148] = static_cast<std::uint8_t>(seats);
+    bytes[149] = packet.command[0];
     for (std::size_t extra = 1; extra < seats; ++extra) {
         std::uint8_t *at = bytes.data() + 152 + (extra - 1) * kNetplayExtraSeatSize;
         putInput(at, packet.extraInput[extra - 1]);
         put32(at + 8, packet.extraPause[extra - 1]);
+        at[12] = packet.command[extra];
     }
     const std::size_t body = bytes.size() - 4;
     put32(bytes.data() + body, packetHash(bytes.data(), body));
@@ -150,6 +192,10 @@ std::vector<std::uint8_t> encode(const InputPacket &packet)
 
 bool decode(const std::uint8_t *bytes, std::size_t size, InputPacket &packet)
 {
+    if (size >= 8 && std::equal(kMagic.begin(), kMagic.end(), bytes) && get16(bytes + 4) == kProtocolVersion
+        && bytes[6] == static_cast<std::uint8_t>(PacketType::Control)) {
+        return decodeControl(bytes, size, packet);
+    }
     if (size < kPacketSize || size > kMaxPacketSize || !std::equal(kMagic.begin(), kMagic.end(), bytes)
         || get16(bytes + 4) != kProtocolVersion || bytes[6] < 1 || bytes[6] > 3
         || get32(bytes + 48) != kStateHashVersion) {
@@ -157,7 +203,7 @@ bool decode(const std::uint8_t *bytes, std::size_t size, InputPacket &packet)
     }
     const std::size_t seats = bytes[148];
     if (seats < 1 || seats > kMaxNetplayPeers || size != packetSizeFor(seats)
-        || bytes[149] != 0 || bytes[150] != 0 || bytes[151] != 0
+        || bytes[150] != 0 || bytes[151] != 0
         || get32(bytes + size - 4) != packetHash(bytes, size - 4)) {
         return false;
     }
@@ -185,10 +231,15 @@ bool decode(const std::uint8_t *bytes, std::size_t size, InputPacket &packet)
     packet.seats = static_cast<std::uint8_t>(seats);
     packet.extraInput = {};
     packet.extraPause = {};
+    packet.command = {};
+    packet.control.clear();
+    packet.command[0] = bytes[149];
     for (std::size_t extra = 1; extra < seats; ++extra) {
         const std::uint8_t *at = bytes + 152 + (extra - 1) * kNetplayExtraSeatSize;
+        if (at[13] != 0 || at[14] != 0 || at[15] != 0) return false;
         packet.extraInput[extra - 1] = getInput(at);
         packet.extraPause[extra - 1] = get32(at + 8);
+        packet.command[extra] = at[12];
     }
     // The author byte indexes seat arrays, so it is bounded here and nowhere else.
     // It said "< 2" -- the single line that made a third player impossible at the
@@ -243,7 +294,7 @@ struct UdpTransport::Impl {
     // network setting. Its random numbers never touch the game's.
     struct Held {
         std::chrono::steady_clock::time_point due;
-        std::array<std::uint8_t, 256> bytes {};
+        std::array<std::uint8_t, 1500> bytes {};
         int size = 0;
         sockaddr_in sender {};
     };
@@ -400,6 +451,10 @@ bool UdpTransport::sendInputTo(std::uint8_t player, const InputPacket &packet)
     const auto bytes = encode(packet);
     const int sent = sendto(mImpl->socket, reinterpret_cast<const char *>(bytes.data()), static_cast<int>(bytes.size()), 0,
         reinterpret_cast<const sockaddr *>(&mImpl->peers[player].address), sizeof(sockaddr_in));
+    // The ping rides beside the game packets of every link, about once a second. It used to
+    // be sent only from sendInput(), which the session (it sends to each peer with its own
+    // acknowledgements) never calls: no peer ever answered, and the ping box showed "--".
+    sendPingIfDue(player);
     if (sent != static_cast<int>(bytes.size())) {
         mImpl->error = "UDP send failed: " + std::to_string(lastSocketError());
         return false;
@@ -444,6 +499,17 @@ std::int64_t ping_stamp(const std::uint8_t *bytes)
 }
 } // namespace
 
+void UdpTransport::sendPingIfDue(std::uint8_t player)
+{
+    auto &peer = mImpl->peers[player];
+    const auto now = std::chrono::steady_clock::now();
+    if (now - peer.lastPingSent < kPingInterval) return;
+    peer.lastPingSent = now;
+    const auto ping = ping_bytes(1, steady_ns());
+    sendto(mImpl->socket, reinterpret_cast<const char *>(ping.data()), static_cast<int>(ping.size()), 0,
+        reinterpret_cast<const sockaddr *>(&peer.address), sizeof(sockaddr_in));
+}
+
 bool UdpTransport::sendInput(const InputPacket &packet)
 {
     if (mImpl->socket == kInvalidSocket) {
@@ -455,18 +521,10 @@ bool UdpTransport::sendInput(const InputPacket &packet)
     // which link failed; that is the session layer's job, from missing inputs.
     bool any = false;
     bool anyPeer = false;
-    const auto now = std::chrono::steady_clock::now();
     for (std::size_t seat = 0; seat < mImpl->peers.size(); ++seat) {
-        auto &peer = mImpl->peers[seat];
-        if (!peer.valid) continue;
+        if (!mImpl->peers[seat].valid) continue;
         anyPeer = true;
-        if (sendInputTo(static_cast<std::uint8_t>(seat), packet)) any = true;
-        if (now - peer.lastPingSent >= kPingInterval) {
-            peer.lastPingSent = now;
-            const auto ping = ping_bytes(1, steady_ns());
-            sendto(mImpl->socket, reinterpret_cast<const char *>(ping.data()), static_cast<int>(ping.size()), 0,
-                reinterpret_cast<const sockaddr *>(&peer.address), sizeof(sockaddr_in));
-        }
+        if (sendInputTo(static_cast<std::uint8_t>(seat), packet)) any = true;   // (pings too)
     }
     if (!anyPeer) {
         mImpl->error = "UDP transport is not connected";
@@ -481,7 +539,7 @@ bool UdpTransport::receiveInput(InputPacket &packet)
     // Pings are answered or measured here and never returned; keep reading so
     // a ping does not end the caller's drain of the socket for this frame.
     for (;;) {
-    std::array<std::uint8_t, 512> bytes {};
+    std::array<std::uint8_t, 1500> bytes {};
     sockaddr_in sender {};
 #if defined(_WIN32)
     int senderSize = sizeof(sender);
@@ -518,7 +576,7 @@ bool UdpTransport::receiveInput(InputPacket &packet)
             return false;
         }
         received = due->size;
-        std::copy(due->bytes.begin(), due->bytes.end(), bytes.begin());
+        std::copy(due->bytes.begin(), due->bytes.begin() + std::min<std::size_t>(due->bytes.size(), bytes.size()), bytes.begin());
         sender = due->sender;
         mImpl->held.erase(due);
         if ((++mImpl->impairPassed % 20000u) == 0) {
@@ -856,6 +914,17 @@ bool runTransportSelfTest()
         for (std::size_t k = 0; k < 3; ++k)
             if (!rollback::inputsEqual(back.extraInput[k], multi.extraInput[k]) || back.extraPause[k] != multi.extraPause[k])
                 return transportCheckFailed(__LINE__);
+        if (back.command != std::array<std::uint8_t, kMaxNetplayPeers> {}) return transportCheckFailed(__LINE__);
+        // Protocol 11: the command bytes of every seat travel with their input.
+        {
+            InputPacket commands = multi;
+            commands.command = {0x85, 0x00, 0x13, 0x80};
+            const auto withCommands = encode(commands);
+            InputPacket read {};
+            if (withCommands.size() != bytes.size() || !decode(withCommands.data(), withCommands.size(), read)
+                || read.command[0] != 0x85 || read.command[1] != 0 || read.command[2] != 0x13 || read.command[3] != 0x80)
+                return transportCheckFailed(__LINE__);
+        }
         // A seat count that does not match the size, or seats past seat 8, never decode.
         auto wrong = bytes;
         wrong[148] = 3;
@@ -867,6 +936,24 @@ bool runTransportSelfTest()
         // One seat: the same 156 bytes as any one-person computer.
         multi.seats = 1;
         if (encode(multi).size() != kPacketSize) return transportCheckFailed(__LINE__);
+    }
+    // Protocol 11 Control packets: the payload comes back byte for byte; a bad
+    // checksum or length never decodes.
+    {
+        InputPacket control {};
+        control.type = PacketType::Control;
+        control.sessionId = codecSample.sessionId;
+        control.sequence = 991;
+        control.player = 4;
+        for (unsigned i = 0; i < 300; ++i) control.control.push_back(static_cast<std::uint8_t>(i * 7));
+        auto wire = encode(control);
+        InputPacket back {};
+        if (!decode(wire.data(), wire.size(), back) || back.type != PacketType::Control || back.player != 4
+            || back.sequence != 991 || back.control != control.control) return transportCheckFailed(__LINE__);
+        wire[40] ^= 1;
+        if (decode(wire.data(), wire.size(), back)) return transportCheckFailed(__LINE__);
+        wire[40] ^= 1;
+        if (decode(wire.data(), wire.size() - 1, back)) return transportCheckFailed(__LINE__);
     }
     codecSample.state.frame = kNoHashFrame;
     bytes = encode(codecSample);

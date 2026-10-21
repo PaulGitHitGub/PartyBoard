@@ -28,6 +28,13 @@ public:
         return mFailure;
     }
     bool connected() const { return mPeer; }
+    // Milliseconds left before check() reports a stall (the 2-minute watchdog), for
+    // the drop banner's countdown (docs/ONLINE_DROP_VOTE.md). 120000 before start().
+    std::uint64_t remaining(std::uint64_t now) const {
+        if (!mStarted || now < mSince) return 120000u;
+        const std::uint64_t idle = now - mSince;
+        return idle >= 120000u ? 0u : 120000u - idle;
+    }
     bool waiting(std::uint64_t now) const { return mStarted && now >= mSince && now - mSince >= 5000u && mFailure == ProgressFailure::None; }
 private:
     std::uint64_t mSince = 0;

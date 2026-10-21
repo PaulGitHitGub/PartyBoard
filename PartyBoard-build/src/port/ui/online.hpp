@@ -10,6 +10,7 @@ namespace partyboard::online::tailnet {
 class Scanner;
 class Identity;
 class Lobby;
+struct SavedParty;
 }
 
 // The "Play Online" window on platforms that cannot start PartyBoardOnline.exe
@@ -47,6 +48,13 @@ private:
     void build_tailnet(Rml::Element *content);
     void host_tailnet();
     void join_tailnet(const std::string &ip);
+    // Continuing a saved online party (docs/ONLINE_CONTINUE.md): the one this
+    // computer hosted, read when the window opens.
+    void continue_tailnet();
+    void new_party_instead();
+    std::unique_ptr<online::tailnet::SavedParty> mSaved;
+    Component *mContinueRow = nullptr;
+    bool mTestContinue = false;
     std::unique_ptr<online::tailnet::Scanner> mScanner;
     std::unique_ptr<online::tailnet::Identity> mIdentity;
     std::unique_ptr<online::tailnet::Lobby> mLobby;

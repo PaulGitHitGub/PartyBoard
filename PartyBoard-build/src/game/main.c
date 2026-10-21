@@ -38,7 +38,6 @@ void PartyBoard_ButtonPromptsUpdate(void); /* port/button_prompts.cpp */
 #include "port/crash_report.h"
 #include "port/dolassets.h"
 #include "port/ui.h"
-#include "port/retroachievements.h"
 #include "aurora/dvd.h"
 #include <aurora/aurora.h>
 #include <aurora/event.h>
@@ -320,7 +319,6 @@ void main(void)
 #ifdef TARGET_PC
                 PartyBoard_RunGameLogicTick();
                 PartyBoard_NetplayCommitTick();
-                PartyBoard_RAGameTick();
                 simulatedTicks++;
 #else
                 pfClsScr();
@@ -344,7 +342,6 @@ void main(void)
            a different number of frames at the same simulation frame have run
            those hooks a different number of times. */
         PartyBoard_RenderedFrames++;
-        PartyBoard_RAFramePump();
 #if defined(__APPLE__) || defined(_WIN32)
         PartyBoard_ButtonPromptsUpdate();
 #endif
@@ -462,7 +459,19 @@ void main(void)
            simulation stops ticking that this message must stay alive. */
         static bool netplayWaitingShown = false;
         static unsigned netplayNoticeFrame = 0;
-        if (PartyBoard_NetplayWaiting()) {
+        /* Another computer went quiet: the drop banner (overlay.cpp) says who, the
+           real time left and the vote; this toast's bar showed only its own 12 s
+           (docs/ONLINE_DROP_VOTE.md). */
+        static bool netplayBannerOwned = false;
+        static unsigned netplayComputerSeats = 0;
+        if (PartyBoard_NetplayWaiting() && PartyBoard_NetplayDropBannerOwnsWait()) {
+            if (!netplayBannerOwned) {
+                netplayBannerOwned = true;
+                netplayComputerSeats = PartyBoard_NetplayComputerSeats();
+                OSReport("[netplay] drop: the waiting toast gives way to the drop banner\n");
+            }
+            netplayWaitingShown = true;
+        } else if (PartyBoard_NetplayWaiting()) {
             if (!netplayWaitingShown
                 || PartyBoard_RenderedFrames - netplayNoticeFrame >= 600u) {
                 if (PartyBoard_NetplayPeerSeen()) {
@@ -476,8 +485,13 @@ void main(void)
                 netplayNoticeFrame = PartyBoard_RenderedFrames;
             }
         } else if (netplayWaitingShown && !PartyBoard_NetplayHasError()) {
-            ui_push_toast("info", "Connection restored", "The game is continuing.", 3000);
+            if (netplayBannerOwned && PartyBoard_NetplayComputerSeats() != netplayComputerSeats) {
+                ui_push_toast("info", "Continuing without them", "Computer players took their places.", 4000);
+            } else {
+                ui_push_toast("info", "Connection restored", "The game is continuing.", 3000);
+            }
             netplayWaitingShown = false;
+            netplayBannerOwned = false;
         }
         /* A stopped session keeps saying so. A sixty-second toast that
            expires leaves the same blank, silent screen as no toast at all. */

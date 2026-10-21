@@ -14,6 +14,15 @@ A phone keeps its player across reconnects (lock screen, reload): the page
 sends a client id it keeps in local storage, and the bridge remembers which
 player that id last had.
 
+Why phones drop is logged: every disconnect gets one line in bridge.log (and
+a short one in game.log, sent to the game as "#note <text>") with the reason
+(the phone's close code, no message for DROP_AFTER seconds, the page being
+hidden, or a network error), how long it was connected and its last ping. The
+bridge pings each phone every PING_EVERY seconds (WebSocket ping frames, which
+browsers answer by themselves) and logs the round trip once a minute. The page
+reports when it is hidden or visible again ("vis:"), its screen wake lock
+("wake:"), and after a reconnect how its previous connection ended ("prev:").
+
 Standard library only (macOS's built-in python3 is enough; on Windows,
 partyboard.exe starts it with Python 3.7 or later from python.org, see
 src/port/phone_bridge_win.cpp).
@@ -41,6 +50,12 @@ WRONG_CODE_WINDOW = 600.0
 LOCKOUT = 600.0
 PHONE_TIMEOUT = 1.0      # seconds without a message before a phone's input is released
 KEEPALIVE = 0.25         # how often held pads are re-sent (the game times out at 1 s)
+# The page sends its state every 150 ms; a phone silent this long (asleep,
+# locked, off the Wi-Fi) is disconnected, so the reason is logged and the
+# player shows as free, instead of a dead connection lingering.
+DROP_AFTER = 20.0
+PING_EVERY = 5.0         # WebSocket ping to each phone, for its round-trip time
+PING_LOG_EVERY = 60.0    # how often each phone's ping is written to bridge.log
 
 NEUTRAL = (0, 0, 0)
 BUTTON_NAMES = [(0x100, "A"), (0x200, "B"), (0x400, "X"), (0x800, "Y"), (0x1000, "START"),
@@ -104,9 +119,31 @@ class Phone:
         self.state = NEUTRAL
         self.last_msg = time.monotonic()
         self.released = True     # game told "R" since the last input
+        # For the disconnect line.
+        self.connected_at = time.monotonic()
+        self.last_seen = self.connected_at   # any frame, including pongs
+        self.end_reason = None   # set by the bridge when it ends the connection
+        self.hidden_since = None # the page said it was hidden (screen off, app switch)
+        self.wake = None         # the page's screen wake lock: held / unsupported / released / failed ...
+        self.logged_pad = None   # the player in the log lines
+        # Ping: id -> time sent; round trips since the last ping log line.
+        self.ping_id = 0
+        self.pings = {}
+        self.rtt = None          # last round trip, ms
+        self.rtts = []
+        self.unanswered = 0
+        self.ping_logged = self.connected_at
 
     def active(self):
         return time.monotonic() - self.last_msg < PHONE_TIMEOUT
+
+    def who(self):
+        pad = self.pad if self.pad is not None else self.logged_pad
+        return f"Player {pad + 1}'s phone ({self.peer})" if pad is not None else f"Phone from {self.peer}"
+
+    def short(self):
+        pad = self.pad if self.pad is not None else self.logged_pad
+        return f"P{pad + 1} phone" if pad is not None else f"phone {self.peer}"
 
 
 class Bridge:
@@ -187,6 +224,10 @@ class Bridge:
             except (ConnectionError, OSError):
                 pass
 
+    def note(self, text):
+        """A short line for game.log (the game prints it as "Phone controller: ...")."""
+        self.send_game("#note " + text)
+
     def hold(self, phone):
         if phone.pad is None:
             return
@@ -238,6 +279,7 @@ class Bridge:
         """Re-send each held pad so the game keeps it; release silent phones."""
         while True:
             await asyncio.sleep(KEEPALIVE)
+            now = time.monotonic()
             for phone in list(self.phones):
                 if phone.active():
                     self.hold(phone)
@@ -245,6 +287,51 @@ class Bridge:
                     phone.state = NEUTRAL
                     self.trace.state(phone.pad, NEUTRAL)
                     self.release(phone)
+                if phone.end_reason is None and now - phone.last_seen > DROP_AFTER:
+                    phone.end_reason = f"timed out (no message for {DROP_AFTER:.0f} s)"
+                    # abort, not close: close waits to send what is queued,
+                    # which a phone that is gone never takes.
+                    phone.writer.transport.abort()
+
+    async def pinger(self):
+        """Pings every phone every few seconds; logs each one's round trip
+        about once a minute."""
+        while True:
+            await asyncio.sleep(PING_EVERY)
+            now = time.monotonic()
+            for phone in list(self.phones):
+                if phone.end_reason is not None:
+                    continue
+                # A ping still unanswered after the next one is due counts as lost.
+                lost = [i for i, t in phone.pings.items() if now - t > PING_EVERY]
+                for i in lost:
+                    del phone.pings[i]
+                phone.unanswered += len(lost)
+                phone.ping_id = (phone.ping_id + 1) & 0xFFFFFFFF
+                phone.pings[phone.ping_id] = now
+                try:
+                    phone.writer.write(bytes([0x89, 4]) + struct.pack(">I", phone.ping_id))
+                except (ConnectionError, OSError, RuntimeError):
+                    pass
+                if now - phone.ping_logged >= PING_LOG_EVERY:
+                    phone.ping_logged = now
+                    if phone.rtts:
+                        r = phone.rtts
+                        log(f"{phone.who()}: ping {phone.rtt:.0f} ms (last minute: min {min(r):.0f}, "
+                            f"avg {sum(r) / len(r):.0f}, max {max(r):.0f} ms, {len(r)} answered, "
+                            f"{phone.unanswered} unanswered)")
+                    else:
+                        log(f"{phone.who()}: no ping answered in the last minute ({phone.unanswered} unanswered)")
+                    phone.rtts = []
+                    phone.unanswered = 0
+
+    def on_pong(self, phone, payload):
+        if len(payload) != 4:
+            return
+        sent = phone.pings.pop(struct.unpack(">I", payload)[0], None)
+        if sent is not None:
+            phone.rtt = (time.monotonic() - sent) * 1000
+            phone.rtts.append(phone.rtt)
 
     # ---- phone side ------------------------------------------------------
 
@@ -320,13 +407,23 @@ class Bridge:
         peer = writer.get_extra_info("peername")
         phone = Phone(writer, peer[0] if peer else "?")
         self.phones.append(phone)
+        reason = None
         try:
             while True:
                 opcode, payload = await ws_recv(reader)
+                phone.last_seen = time.monotonic()
                 if opcode == 0x8:          # close
+                    reason = close_reason(payload)
+                    try:
+                        await ws_send(writer, payload[:2], opcode=0x8)
+                    except (ConnectionError, OSError):
+                        pass
                     break
                 if opcode == 0x9:          # ping
                     await ws_send(writer, payload, opcode=0xA)
+                    continue
+                if opcode == 0xA:          # pong (answer to our ping)
+                    self.on_pong(phone, payload)
                     continue
                 if opcode != 0x1:
                     continue
@@ -334,24 +431,76 @@ class Bridge:
                 if text.startswith("hello:"):
                     await self.join(phone, text[6:40] or None)
                     if phone.pad is None:
-                        break              # all four players taken
+                        phone.end_reason = "turned away (all players taken)"
+                        break
                 elif text == "switch":
                     await self.switch(phone)
+                elif text.startswith(("vis:", "wake:", "prev:")):
+                    self.on_page_note(phone, text)
                 elif phone.pad is not None:
                     self.on_input(phone, text)
-        except (asyncio.IncompleteReadError, ConnectionError, OSError):
-            pass
+        except asyncio.IncompleteReadError:
+            reason = "the connection ended without a close message"
+        except (ConnectionError, OSError) as e:
+            reason = f"network error ({describe_error(e)})"
         finally:
             self.phones.remove(phone)
+            self.log_disconnect(phone, reason)
             if phone.pad is not None:
                 if phone.client_id:
                     self.last_pad[phone.client_id] = phone.pad
                 self.trace.state(phone.pad, NEUTRAL)
                 self.trace.event(f"P{phone.pad + 1} phone disconnected")
-                log(f"Player {phone.pad + 1}'s phone ({phone.peer}) disconnected.")
                 self.release(phone)
                 await self.broadcast_status()
             writer.close()
+
+    def log_disconnect(self, phone, reason):
+        """One line on why a phone went away: bridge.log, plus a short one in game.log."""
+        now = time.monotonic()
+        # The bridge's own reason (timeout, replaced, turned away) wins over
+        # what the socket saw when it was closed.
+        why = phone.end_reason or reason or "closed"
+        if phone.hidden_since is not None:
+            why = f"page hidden {duration(now - phone.hidden_since)} before (screen off, app switched or page closed); then {why}"
+        ping = f"last ping {phone.rtt:.0f} ms" if phone.rtt is not None else "no ping answered"
+        silent = now - phone.last_seen
+        details = [f"connected {duration(now - phone.connected_at)}", ping]
+        if silent >= 2:
+            details.append(f"last message {duration(silent)} before")
+        if phone.wake:
+            details.append(f"wake lock {phone.wake}")
+        log(f"{phone.who()} disconnected: {why}; {', '.join(details)}.")
+        self.note(f"{phone.short()} disconnected: {why}; {', '.join(details[:2])}")
+
+    def on_page_note(self, phone, text):
+        """What the page reports about itself: hidden/visible, its wake lock,
+        and how its previous connection ended (after a reconnect)."""
+        kind, _, value = text.partition(":")
+        value = "".join(c for c in value[:120] if c.isprintable())
+        now = time.monotonic()
+        if kind == "vis":
+            if value == "hidden" and phone.hidden_since is None:
+                phone.hidden_since = now
+                log(f"{phone.who()}: page hidden (screen off, locked or another app).")
+            elif value == "visible" and phone.hidden_since is not None:
+                log(f"{phone.who()}: page visible again after {duration(now - phone.hidden_since)}.")
+                phone.hidden_since = None
+        elif kind == "wake":
+            if value != phone.wake:
+                phone.wake = value
+                state = {"held": "held (the screen stays on)",
+                         "unsupported http": "not supported: browsers offer it only on https pages, "
+                                             "and this link is http (the screen can sleep)",
+                         "unsupported browser": "not supported by this browser (the screen can sleep)",
+                         "released": "released (the screen can sleep)"}.get(value)
+                if state is None:
+                    state = (f"request refused ({value[7:]}; the screen can sleep)"
+                             if value.startswith("failed ") else value)
+                log(f"{phone.who()}: wake lock {state}.")
+                self.note(f"{phone.short()} wake lock {value}")
+        elif kind == "prev":
+            log(f"{phone.who()}: the phone saw its previous connection end: {value}.")
 
     async def join(self, phone, client_id):
         phone.client_id = client_id
@@ -360,7 +509,9 @@ class Bridge:
         for other in list(self.phones):
             if other is not phone and client_id and other.client_id == client_id:
                 phone.pad = other.pad
+                other.logged_pad = other.pad
                 other.pad = None
+                other.end_reason = "replaced by a new connection from the same phone"
                 await self.tell(other, "replaced")
                 other.writer.close()
         if phone.pad is None:
@@ -369,6 +520,7 @@ class Bridge:
             await self.tell(phone, "full")
             log(f"Phone from {phone.peer} turned away: all four players are taken (phones or controllers).")
             return
+        phone.logged_pad = phone.pad
         log(f"Phone from {phone.peer} joined as player {phone.pad + 1}.")
         self.trace.event(f"P{phone.pad + 1} phone connected ({phone.peer})")
         await self.broadcast_status()
@@ -381,6 +533,7 @@ class Bridge:
         old = phone.pad
         self.release(phone, old)
         phone.pad = new
+        phone.logged_pad = new
         log(f"Phone from {phone.peer} switched from player {old + 1} to {new + 1}.")
         self.trace.event(f"P{old + 1} phone switched to P{new + 1}")
         await self.broadcast_status()
@@ -400,6 +553,36 @@ class Bridge:
             phone.state = (b, x, y)
             self.trace.state(phone.pad, phone.state)
             self.hold(phone)
+
+
+CLOSE_CODES = {1000: "normal", 1001: "going away: page closed, reloaded or put away",
+               1002: "protocol error", 1005: "no code", 1006: "abnormal: no close message",
+               1008: "policy", 1009: "message too big", 1011: "error"}
+
+
+def close_reason(payload):
+    """The phone's close frame as text: code, meaning and its reason, if any."""
+    if len(payload) < 2:
+        return "the phone closed the connection (no close code)"
+    code = struct.unpack(">H", payload[:2])[0]
+    text = "".join(c for c in payload[2:].decode(errors="replace")[:80] if c.isprintable())
+    meaning = CLOSE_CODES.get(code, "")
+    return (f"the phone closed the connection (code {code}" + (f", {meaning}" if meaning else "")
+            + (f", \"{text}\"" if text else "") + ")")
+
+
+def describe_error(e):
+    name = type(e).__name__
+    return f"{name}: {e.strerror}" if getattr(e, "strerror", None) else (f"{name}: {e}" if str(e) else name)
+
+
+def duration(seconds):
+    s = int(seconds)
+    if s < 60:
+        return f"{s} s"
+    if s < 3600:
+        return f"{s // 60} min {s % 60} s"
+    return f"{s // 3600} h {s % 3600 // 60} min"
 
 
 async def http_reply(writer, status, ctype, body):
@@ -463,7 +646,7 @@ async def main():
         log(f"Can't serve the controller page: port {args.http_port} is in use by another program.")
         return
     log(f"Controller page served on port {args.http_port}")
-    tasks = [server.serve_forever(), bridge.game_link(), bridge.keepalive()]
+    tasks = [server.serve_forever(), bridge.game_link(), bridge.keepalive(), bridge.pinger()]
     if args.game_pid:
         tasks.append(follow_game(args.game_pid, args.log_dir, server))
     async with server:

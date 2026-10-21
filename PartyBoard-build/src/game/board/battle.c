@@ -867,6 +867,14 @@ static void SetBattleCoinValue(void) {
         var_r29 = 0;
     }
     temp_r25 = PB_F2S32(3.0f * ((float) GWSystem.turn / GWSystem.max_turn));
+    /* The last turn produces phase 3, but the table has phases 0 through 2.
+       Use the final phase rather than reading the next row or adjacent data. */
+    if (temp_r25 >= (s32) ARRAY_COUNT(battleChanceTbl[0])) {
+        OSReport("[battle] final-turn entry probabilities: phase %d clamped to %d (turn %d/%d)\n",
+            temp_r25, (s32) ARRAY_COUNT(battleChanceTbl[0]) - 1,
+            GWSystem.turn, GWSystem.max_turn);
+        temp_r25 = (s32) ARRAY_COUNT(battleChanceTbl[0]) - 1;
+    }
     temp_r26 = BoardRandMod(100);
     var_r27 = var_r28 = 0;
     for (i = 4; i >= 0; i--) {

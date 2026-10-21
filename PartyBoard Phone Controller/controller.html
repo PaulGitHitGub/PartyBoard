@@ -268,20 +268,96 @@
     if (player && ws && ws.readyState === 1) ws.send("switch");
   });
 
+  // --- staying awake; telling the bridge why we might drop ------------------
+  // Nothing here shows on the page: the bridge writes it to its logs.
+  function note(text) { if (ws && ws.readyState === 1) ws.send(text); }
+
+  // The screen wake lock, held while connected. Browsers only offer it on
+  // https pages (a "secure context"), which the bridge's plain-http link is
+  // not, and older iOS Safari lacks it altogether: then it is quietly skipped
+  // and the bridge logs why.
+  let wakeLock = null, wakeAsking = false, wakeState = "";
+  function setWake(state) {
+    if (state === wakeState) return;
+    wakeState = state;
+    note("wake:" + state);
+  }
+  function keepAwake() {
+    if (!navigator.wakeLock || !navigator.wakeLock.request) {
+      setWake(window.isSecureContext === false ? "unsupported http" : "unsupported browser");
+      return;
+    }
+    if (wakeLock || wakeAsking || document.hidden || !ws || ws.readyState !== 1) return;
+    wakeAsking = true;
+    navigator.wakeLock.request("screen").then(lock => {
+      wakeAsking = false;
+      if (!ws || ws.readyState !== 1) { lock.release().catch(() => {}); return; }
+      wakeLock = lock;
+      lock.addEventListener("release", () => {
+        if (wakeLock === lock) wakeLock = null;
+        setWake("released");
+      });
+      setWake("held");
+    }, err => {
+      wakeAsking = false;
+      setWake("failed " + ((err && err.name) || "error"));
+    });
+  }
+  function letSleep() {
+    const lock = wakeLock;
+    wakeLock = null;
+    if (lock) lock.release().catch(() => {});
+  }
+  // The browser drops the lock whenever the page is hidden; take it again
+  // when it comes back. Some browsers want a tap first: try on taps too.
+  let hiddenAt = 0;
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) { hiddenAt = Date.now(); note("vis:hidden"); }
+    else { note("vis:visible"); keepAwake(); }
+  });
+  document.addEventListener("pointerdown", () => {
+    if (!wakeLock && wakeState !== "held" && !wakeState.startsWith("unsupported")) keepAwake();
+  });
+
+  // How the last connection ended, sent after reconnecting (the bridge often
+  // never hears the close itself when the phone sleeps).
+  let openedAt = 0, prevClose = "";
+  function describeClose(ev) {
+    const now = Date.now();
+    let text = `code ${ev.code}${ev.reason ? ` "${ev.reason.slice(0, 40)}"` : ""}` +
+      `${ev.wasClean ? "" : ", not clean"}, after ${Math.round((now - openedAt) / 1000)} s connected`;
+    if (document.hidden) text += ", page hidden";
+    else if (hiddenAt > openedAt) text += `, page was hidden ${Math.round((now - hiddenAt) / 1000)} s before`;
+    return text;
+  }
+
   function connect() {
     if (!token) { setStatus("Missing code: open the link from the Mac's Terminal window", "bad"); return; }
     ws = new WebSocket(`ws://${location.host}/ws?k=${encodeURIComponent(token)}`);
-    ws.onopen = () => { ws.send("hello:" + clientId); setStatus("Connected, waiting for PartyBoard", ""); };
+    ws.onopen = () => {
+      ws.send("hello:" + clientId);
+      openedAt = Date.now();
+      if (prevClose) { ws.send("prev:" + prevClose); prevClose = ""; }
+      if (document.hidden) ws.send("vis:hidden");
+      wakeState = "";
+      keepAwake();
+      setStatus("Connected, waiting for PartyBoard", "");
+    };
     ws.onmessage = ev => {
       const m = ev.data;
       if (m === "game:on") { gameOn = true; showStatus(); }
       else if (m === "game:off") { gameOn = false; showStatus(); }
       else if (m.startsWith("player:")) { player = Number(m.slice(7)); showPlayer(); showStatus(); send(true); }
       else if (m === "nofree") { flash("No other player is free"); }
-      else if (m === "full") { setStatus("All four players are taken (phones or controllers)", "bad"); ws.onclose = null; }
-      else if (m === "replaced") { setStatus("This phone connected again in another tab", "bad"); ws.onclose = null; }
+      else if (m === "full") { setStatus("All four players are taken (phones or controllers)", "bad"); ws.onclose = null; letSleep(); }
+      else if (m === "replaced") { setStatus("This phone connected again in another tab", "bad"); ws.onclose = null; letSleep(); }
     };
-    ws.onclose = () => { gameOn = false; setStatus("Disconnected · retrying…", "bad"); setTimeout(connect, 1000); };
+    ws.onclose = ev => {
+      if (openedAt) prevClose = describeClose(ev);
+      openedAt = 0;
+      letSleep();
+      gameOn = false; setStatus("Disconnected · retrying…", "bad"); setTimeout(connect, 1000);
+    };
   }
   connect();
 })();

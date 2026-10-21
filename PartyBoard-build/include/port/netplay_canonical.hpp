@@ -1,6 +1,7 @@
 #pragma once
 #include "port/netplay_state.hpp"
 #include "port/netplay_state.h"
+#include "port/online_party.h"
 extern "C" {
 #include "game/gamework.h"
 #include "game/gamework_data.h"
@@ -23,6 +24,11 @@ inline CanonicalState captureCanonical(const StateDigest &stamp) {
 
     out.begin(Subsystem::Meta);
     WORD(stamp.version); WORD(stamp.frame); WORD(stamp.context);
+    // A session continuing a saved online party (docs/ONLINE_CONTINUE.md): which
+    // save, so a copy that continued another save (or none) shows at once.
+    // Absent otherwise, so other sessions hash exactly as before.
+    if (const std::uint32_t saved = PartyBoard_OnlinePartyContinueHash32()) out.add("continue_save", saved);
+    if (const std::uint32_t map = PartyBoard_OnlinePartyContinueMapHash()) out.add("continue_seat_map", map);
 
     out.begin(Subsystem::Rng);
     WORD(stamp.frand); WORD(stamp.rand8); WORD(boardRandSeed);

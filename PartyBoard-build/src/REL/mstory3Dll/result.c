@@ -2,6 +2,7 @@
 #include "REL/mstory3Dll.h"
 #ifdef TARGET_PC
 #include "port/netplay_runtime.h"
+#include "port/online_party.h"
 #include <stdio.h>
 #include <string.h>
 #include "game/memory.h"
@@ -656,6 +657,13 @@ void fn_1_1712C(void) {
     HuSprClose();
     HuSprInit();
     if (SLSaveFlagGet() == 0) {
+#ifdef TARGET_PC
+        /* Online: the party is over; its online party save can't be continued
+           any more (docs/ONLINE_CONTINUE.md). Files only, no game state. */
+        if (PartyBoard_NetplayEnabled()) {
+            PartyBoard_OnlinePartyFinished();
+        }
+#endif
         saveExecF = 0;
         lbl_1_bss_18D4 = 1;
         HuPrcEnd();

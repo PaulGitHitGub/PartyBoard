@@ -647,6 +647,28 @@ void BoardSpaceLandExec(s32 player, s32 space)
 
     BoardSpace *space_ptr = BoardSpaceGet(0, space);
 #if defined(PARTYBOARD_HD_BETA)
+    /* Test aid: send the selected controller port (1-8) to a real lottery
+       entrance on a blue/red landing, to check higher ports without a long game. */
+    if ((space_ptr->type == BLUE_SPACE || space_ptr->type == RED_SPACE)
+        && getenv("PARTYBOARD_TEST_LOTTERY_PORT")
+        && GWPlayer[player].port + 1 == atoi(getenv("PARTYBOARD_TEST_LOTTERY_PORT"))) {
+        s32 entrance;
+        for (entrance = 1; entrance <= BoardSpaceCountGet(0); entrance++) {
+            if (BoardSpaceGet(0, entrance)->flag & 0x10000000) {
+                Vec pos;
+                fprintf(stderr, "[lottery] test aid: player %d (%s, port %d) visits entrance %d\n",
+                    (int)player + 1, EightLogName(player), (int)GWPlayer[player].port + 1, (int)entrance);
+                if (GWPlayer[player].coins < 5) GWPlayer[player].coins = 5;
+                GWPlayer[player].space_curr = entrance;
+                BoardSpacePosGet(0, entrance, &pos);
+                BoardPlayerPosSetV(player, &pos);
+                BoardLotteryExec();
+                fprintf(stderr, "[lottery] test aid: player %d (port %d) finished the lottery\n",
+                    (int)player + 1, (int)GWPlayer[player].port + 1);
+                return;
+            }
+        }
+    }
     /* Test aid: PARTYBOARD_TEST_FORTUNE=1 turns every blue or red landing into
        a fortune space. */
     if ((space_ptr->type == BLUE_SPACE || space_ptr->type == RED_SPACE) && getenv("PARTYBOARD_TEST_FORTUNE")) {

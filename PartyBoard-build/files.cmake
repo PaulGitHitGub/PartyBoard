@@ -79,7 +79,6 @@ set(GAME_FILES
 )
 
 set(PORT_FILES
-        src/port/achievements.cpp
         src/port/audio.c
         src/port/audio_lifetime.cpp
         src/port/byteswap.cpp
@@ -88,9 +87,6 @@ set(PORT_FILES
         src/port/crash_manifest.cpp
         src/port/crash_uploader.cpp
         src/port/http.cpp
-        src/port/retroachievements.cpp
-        src/port/retroachievements_badges.cpp
-        src/port/retroachievements_memory.cpp
         src/port/board_coverage.cpp
         src/port/app_update.cpp
         src/port/app_update_manifest.cpp
@@ -109,9 +105,8 @@ set(PORT_FILES
         src/port/mods_test.inc
         src/port/netplay_transport.cpp
         src/port/netplay_runtime.cpp
-        src/port/online/cubeshelf_friends.cpp
-        src/port/online/cubeshelf_social.cpp
         src/port/online/invitation.cpp
+        src/port/online/online_party.cpp
         src/port/online/tailnet_lobby.cpp
         src/port/OS.c
         src/port/portmain.cpp
@@ -135,8 +130,6 @@ set(PORT_FILES
         src/port/quest_stereo.cpp
         src/port/version.cpp
 
-        src/port/ui/achievements.cpp
-        src/port/ui/achievements.hpp
         src/port/ui/bool_button.cpp
         src/port/ui/bool_button.hpp
         src/port/ui/button.cpp
@@ -145,8 +138,6 @@ set(PORT_FILES
         src/port/ui/component.hpp
         src/port/ui/controller_config.cpp
         src/port/ui/controller_config.hpp
-        src/port/ui/cubeshelf.cpp
-        src/port/ui/cubeshelf.hpp
         src/port/ui/document.cpp
         src/port/ui/document.hpp
         src/port/ui/event.cpp

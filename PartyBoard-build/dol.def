@@ -14,6 +14,7 @@ EXPORTS
     PartyBoard_NetplayWalkMenu
     PartyBoard_HookTickGateEnabled
     PartyBoard_NetplayMaxTurnsOverride
+    PartyBoard_OnlinePartyFinished
     PartyBoard_OnlineCheckDisc
     PartyBoard_TailnetLobbySelfTest
     PartyBoard_TailnetRelaunchProbe
@@ -1071,6 +1072,9 @@ EXPORTS
     SLLoadBoard
     SLLoadBoardStory
     SLLoadGameStat
+    SLOnlinePartyContinueLoad
+    SLOnlinePartyContinuePending
+    SLOnlinePartySave
     SLSave
     SLSaveBoard
     SLSaveBoardStory

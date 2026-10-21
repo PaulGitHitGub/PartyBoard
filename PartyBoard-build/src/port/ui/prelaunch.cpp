@@ -67,12 +67,12 @@ namespace {
             <span id="disc-version" class="detail" />
         </disc-info>
         <version-info class="intro-item delay-5">
-            <div class="version">Version <span id="version-text"></span></div>
-            <div id="update" class="update">
-                <span id="update-message" />
-                <button id="update-download"><span id="update-download-label" /><icon /></button>
-            </div>
+            <span id="version-text" class="version" />
         </version-info>
+        <div id="update" class="update intro-item delay-5">
+            <span id="update-message" />
+            <button id="update-download"><span id="update-download-label" /><icon /></button>
+        </div>
     </content>
 </body>
 </rml>
@@ -619,6 +619,7 @@ bool is_restart_pending() noexcept
 
 namespace {
 
+#ifdef __ANDROID__
     // Changes past this many lines are left to the GitHub release page.
     constexpr std::size_t kMaxNoteLines = 12;
 
@@ -670,6 +671,18 @@ namespace {
         }));
     }
 
+#endif
+
+    // The build string without git describe's leading "v".
+    std::string_view build_describe()
+    {
+        std::string_view version(PARTY_BOARD_WC_DESCRIBE);
+        if (!version.empty() && version[0] == 'v') {
+            version.remove_prefix(1);
+        }
+        return version;
+    }
+
 } // namespace
 
 void apply_intro_animation(Rml::Element *element, const char *delay_class)
@@ -718,13 +731,6 @@ Prelaunch::Prelaunch()
         });
         apply_intro_animation(mMenuButtons.back()->root(), "delay-1");
 
-        mMenuButtons.push_back(std::make_unique<Button>(menuList, "Settings"));
-        mMenuButtons.back()->on_pressed([this] {
-            mRestartSuppressed = false;
-            push(std::make_unique<SettingsWindow>(true));
-        });
-        apply_intro_animation(mMenuButtons.back()->root(), "delay-2");
-
 #if defined(_WIN32)
         // Windows: the Tailscale lobby in the game, as on the Mac (2026-10-18: this
         // button started a PartyBoardOnline.exe companion that is not built, so a
@@ -757,14 +763,28 @@ Prelaunch::Prelaunch()
         }
 #endif
 
+        // Settings after Play Online (user's order, 2026-10-19): Play, Play Online, Settings, Quit.
+        mMenuButtons.push_back(std::make_unique<Button>(menuList, "Settings"));
+        mMenuButtons.back()->on_pressed([this] {
+            mRestartSuppressed = false;
+            push(std::make_unique<SettingsWindow>(true));
+        });
+        apply_intro_animation(mMenuButtons.back()->root(), "delay-3");
+
         mMenuButtons.push_back(std::make_unique<Button>(menuList, "Quit"));
         mMenuButtons.back()->on_pressed([] { PartyBoard_IsRunning = false; });
-        apply_intro_animation(mMenuButtons.back()->root(), "delay-3");
+        apply_intro_animation(mMenuButtons.back()->root(), "delay-4");
     }
 
     mDiscStatus = mDocument->GetElementById("disc-status");
     mDiscDetail = mDocument->GetElementById("disc-version");
     mVersion = mDocument->GetElementById("version-text");
+    {
+        const std::string release = update::release_name();
+        std::fprintf(stdout, "[version] home screen shows \"%s\", build %s\n",
+            release.empty() ? ("Version " + std::string(build_describe())).c_str() : release.c_str(), PARTY_BOARD_WC_DESCRIBE);
+        std::fflush(stdout);
+    }
     mUpdateStatus = mDocument->GetElementById("update");
     mUpdateMessage = mDocument->GetElementById("update-message");
     mUpdateDownload = mDocument->GetElementById("update-download");
@@ -920,17 +940,22 @@ void Prelaunch::update()
         }
     }
     if (mVersion != nullptr) {
-        std::string_view versionStr(PARTY_BOARD_WC_DESCRIBE);
-        if (versionStr[0] == 'v') {
-            versionStr = versionStr.substr(1);
+        // Release builds show only their friendly name (the build string is in game.log, the
+        // [version] line); other builds show the build string as before.
+        const std::string release = update::release_name();
+        if (!release.empty()) {
+            mVersion->SetInnerRML(escape(release));
         }
-        mVersion->SetInnerRML(escape(versionStr));
+        else {
+            mVersion->SetInnerRML(escape(fmt::format(fmt::runtime(ui_translate("Version {}")), build_describe())));
+        }
     }
     if (mUpdateStatus != nullptr && update::supported()) {
         const auto status = update::status();
         const char *state = nullptr;
         std::string message;
         const char *action = nullptr;
+#ifdef __ANDROID__
         switch (status.state) {
             case update::State::Checking:
                 if (!status.quiet) {
@@ -967,6 +992,45 @@ void Prelaunch::update()
             case update::State::Idle:
                 break;
         }
+#else
+        switch (status.state) {
+            case update::State::Checking:
+                if (!status.quiet) {
+                    state = "checking";
+                    message = ui_translate("Checking for updates...");
+                }
+                break;
+            case update::State::UpToDate:
+                if (!status.quiet) {
+                    state = "checking";
+                    message = fmt::format(fmt::runtime(ui_translate("You have the latest version ({}).")),
+                        status.installedVersion);
+                }
+                break;
+            case update::State::Available:
+                state = "available";
+                message = fmt::format(fmt::runtime(ui_translate("{} is available.")), status.release.name);
+                action = "Open download page";
+                break;
+            case update::State::Downloading:
+                // The page may have been closed: the button stays to open it again.
+                state = "available";
+                message = fmt::format(fmt::runtime(ui_translate("{}: download page opened in your browser.")),
+                    status.release.name);
+                action = "Open download page";
+                break;
+            case update::State::Failed:
+                state = "failed";
+                message = ui_translate(status.error);
+                if (!status.detail.empty()) {
+                    message += " (" + status.detail + ")";
+                }
+                action = "Retry";
+                break;
+            case update::State::Idle:
+                break;
+        }
+#endif
         if (state != nullptr) {
             mUpdateStatus->SetAttribute("state", state);
         }
@@ -1019,6 +1083,21 @@ bool Prelaunch::update_contains(Rml::Element *element) const
 void Prelaunch::press_update()
 {
     const auto status = update::status();
+#ifndef __ANDROID__
+    // Mac and Windows: the button opens the release page in the browser, nothing more.
+    if (status.state == update::State::Available || status.state == update::State::Downloading) {
+        update::download();
+    }
+    else if (status.state == update::State::Failed) {
+        const auto order = update::compare_versions(status.release.version, status.installedVersion);
+        if (order && *order > 0) {
+            update::download();
+        }
+        else {
+            update::check(false);
+        }
+    }
+#else
     if (status.state == update::State::Available) {
         push_update_modal(*this, status);
     }
@@ -1034,6 +1113,7 @@ void Prelaunch::press_update()
             update::check(false);
         }
     }
+#endif
 }
 
 bool Prelaunch::handle_nav_command(Rml::Event &event, NavCommand cmd)

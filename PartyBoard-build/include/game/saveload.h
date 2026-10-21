@@ -60,5 +60,12 @@ s32 SLStatSet(s32 reportF);
 s32 SLCardMount(s16 slotNo);
 s32 SLFormat(s16 slotNo);
 s16 SLMessOut(s16 mess);
+#ifdef TARGET_PC
+/* Online party save and continue (docs/ONLINE_CONTINUE.md). */
+void SLOnlinePartySave(void);
+BOOL SLOnlinePartyContinueLoad(void);
+/* TRUE between that load and Party Mode's SLLoadBoard: Party Mode skips its continue question. */
+BOOL SLOnlinePartyContinuePending(void);
+#endif
 
 #endif

@@ -161,15 +161,18 @@ body.mirrored #menu-list button:focus-visible {
     decorator: horizontal-gradient(#009dda00 #009ddaFF);
 }
 
+/* The bottom row: one line on each side, low enough to clear the game's own text box
+   ("Pick a card...", which ends about 8% above the bottom edge). */
 disc-info {
     position: absolute;
     left: 96dp;
     right: auto;
-    bottom: 72dp;
+    bottom: 34dp;
     display: flex;
-    flex-direction: column;
-    gap: 12dp;
-    font-size: 24dp;
+    flex-direction: row;
+    align-items: center;
+    gap: 18dp;
+    font-size: 22dp;
     font-effect: glow(0dp 4dp 0dp 4dp black);
     text-align: left;
 }
@@ -184,19 +187,22 @@ version-info {
     position: absolute;
     right: 96dp;
     left: auto;
-    bottom: 72dp;
+    bottom: 34dp;
     display: flex;
-    flex-direction: column;
-    gap: 12dp;
-    text-align: right;
-    font-size: 24dp;
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 14dp;
+    font-size: 22dp;
     font-effect: glow(0dp 4dp 0dp 4dp black);
     text-align: right;
 }
 
+
 body.mirrored version-info {
     right: auto;
     left: 96dp;
+    flex-direction: row-reverse;
     text-align: left;
 }
 
@@ -232,11 +238,11 @@ body.mirrored version-info {
 
 #disc-status icon {
     display: none;
-    width: 24dp;
-    height: 24dp;
+    width: 22dp;
+    height: 22dp;
     font-family: "Material Symbols Rounded";
     font-weight: normal;
-    font-size: 24dp;
+    font-size: 22dp;
 }
 
 #disc-status[status] icon {
@@ -268,35 +274,51 @@ body.mirrored version-info {
 }
 
 #disc-version {
-    font-size: 20dp;
+    font-size: 18dp;
 }
 
+body.mirrored disc-info {
+    flex-direction: row-reverse;
+}
+
+/* The update notice: a small card of the F1 menu's blue glass in the empty sky at the top right,
+   clear of the menu, the game's text box and the bottom row. Message first, its one action under it. */
 .update {
     display: none;
-    color: #A6A09B;
-    align-items: center;
-    justify-content: flex-end;
+    position: absolute;
+    top: 64dp;
+    right: 96dp;
+    left: auto;
+    max-width: 520dp;
+    flex-direction: column;
+    align-items: flex-end;
     gap: 8dp;
-    font-size: 20dp;
+    padding: 14dp 20dp 12dp 20dp;
+    border-width: 2dp;
+    border-color: #009dda;
+    border-radius: 12dp;
+    background-color: rgba(37, 59, 156, 90%);
+    color: #E0DBC8;
+    font-size: 22dp;
+    text-align: right;
 }
 
-.update[state=checking] {
-    display: block;
-}
-
+.update[state=checking],
 .update[state=available],
 .update[state=failed] {
     display: flex;
 }
 
 .update[state=failed] {
+    border-color: #852221;
     color: #FFC9C9;
 }
 
 #update-download {
     display: none;
-    margin: 0dp;
-    padding: 0dp;
+    margin: 0dp -6dp 0dp 0dp;
+    padding: 2dp 6dp;
+    font-size: 20dp;
     border-width: 0dp;
     background-color: transparent;
     color: #D8F999;
@@ -314,10 +336,12 @@ body.mirrored version-info {
 }
 
 /* Reached with a controller (Down past the menu): a headset has no touch. */
+/* Focus as on the menu buttons: cyan fill, dark text. */
+#update-download:hover,
 #update-download:focus-visible {
-    color: #FFFFFF;
-    background-color: #D8F99933;
-    border-radius: 4dp;
+    color: #000000;
+    background-color: #009dda;
+    border-radius: 6dp;
 }
 
 #update-download icon {
@@ -334,7 +358,10 @@ body.mirrored version-info {
 }
 
 body.mirrored .update {
-    justify-content: flex-start;
+    right: auto;
+    left: 96dp;
+    align-items: flex-start;
+    text-align: left;
 }
 
 /* Startup animation */
@@ -456,6 +483,9 @@ body.animate-in .intro-item {
         left: auto;
         bottom: 32dp;
         top: auto;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 8dp;
         text-align: right;
         font-size: 16dp;
     }
@@ -482,7 +512,20 @@ body.animate-in .intro-item {
     }
 
     .update {
+        top: 64dp;
+        right: 32dp;
+        max-width: 360dp;
+        padding: 10dp 14dp 8dp 14dp;
         font-size: 16dp;
+    }
+
+    #update-download {
+        font-size: 16dp;
+    }
+
+    body.mirrored .update {
+        right: auto;
+        left: 32dp;
     }
 
     body.mirrored disc-info {
@@ -490,6 +533,7 @@ body.animate-in .intro-item {
         left: 32dp;
         bottom: 32dp;
         top: auto;
+        align-items: flex-start;
         text-align: left;
     }
 

@@ -77,6 +77,33 @@ int main()
         + R"(", "sha256": ")" + kHash + R"("})");
     expect(minimal.has_value() && minimal->notes.empty() && minimal->commit.empty(), "commit and notes are optional");
 
+    // Mac and Windows releases: latest.json in PaulGitHitGub/PartyBoard-updates.
+    const auto release = parse_release_manifest(R"({"version":"1.1","name":"PartyBoard Beta 1.1","released":"2026-10-19",
+        "page":"https://github.com/PaulGitHitGub/PartyBoard/releases/latest","notes":"one short line"})");
+    expect(release && release->version == "1.1" && release->name == "PartyBoard Beta 1.1"
+            && release->page == "https://github.com/PaulGitHitGub/PartyBoard/releases/latest" && release->notes == "one short line",
+        "a release manifest parses");
+    const auto bare = parse_release_manifest(R"({"version":"2","page":"https://github.com/PaulGitHitGub/PartyBoard/releases/latest"})");
+    expect(bare && bare->name == "PartyBoard 2" && bare->notes.empty(), "name and notes are optional");
+    expect(!parse_release_manifest(R"({"version":"1.1","page":"https://example.com/PartyBoard/releases/latest"})"),
+        "a page outside the release repository");
+    expect(!parse_release_manifest(R"({"version":"1.1","page":"https://github.com/PaulGitHitGub/PartyBoard-evil/x"})"),
+        "a page in a look-alike repository");
+    expect(!parse_release_manifest(R"({"version":"1.1 beta","page":"https://github.com/PaulGitHitGub/PartyBoard/"})"),
+        "a version with text");
+    expect(!parse_release_manifest(R"({"version":1.1,"page":"https://github.com/PaulGitHitGub/PartyBoard/"})"),
+        "a version that is a number");
+    expect(!parse_release_manifest("<html>404</html>"), "not JSON");
+    expect(!parse_release_manifest(""), "empty");
+
+    expect(compare_versions("1.1", "1.0") == 1, "1.1 > 1.0");
+    expect(compare_versions("1.1", "1.1.0") == 0, "1.1 == 1.1.0");
+    expect(compare_versions("1.9", "1.10") == -1, "1.9 < 1.10");
+    expect(compare_versions("2", "1.99") == 1, "2 > 1.99");
+    expect(!compare_versions("1..1", "1.0").has_value(), "empty part");
+    expect(!compare_versions("", "1.0").has_value(), "empty version");
+    expect(!compare_versions("1.0", "v1.0").has_value(), "leading v");
+
     if (failures == 0) {
         std::puts("app_update_test: all checks passed");
         return EXIT_SUCCESS;

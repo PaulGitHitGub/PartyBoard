@@ -118,6 +118,12 @@ s32 FileSelectAutoLoadDefault(void)
     // never read or overwrite either player's personal offline save.
     if (PartyBoard_NetplayEnabled()) {
         FileSelectUseDefaultGameStat();
+        /* Continuing an online party (docs/ONLINE_CONTINUE.md): the host's party
+           save, the same on every copy; still no card read or written. */
+        if (SLOnlinePartyContinueLoad()) {
+            OSReport("Online mode select: continuing the saved online party; local card untouched.\n");
+            return 1;
+        }
         OSReport("Online mode select: fresh session profile; local card untouched.\n");
         return 1;
     }

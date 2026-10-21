@@ -70,7 +70,42 @@ int PartyBoard_NetplayLocalSeat(void);
  * this computer owns (1 offline or with one person), and a bit per seat. */
 int PartyBoard_NetplayLocalSeatCount(void);
 unsigned PartyBoard_NetplayLocalSeatMask(void);
+/* The computer owning `seat`: its first seat and how many seats it has (several
+ * people on one computer). 0 for a seat outside the session. */
+int PartyBoard_NetplaySeatComputer(int seat, int *firstSeat, int *seatCount);
+// 1 when the computer owning online seat `seat` was voted out (drop vote: its seats are computer players now).
+int PartyBoard_NetplaySeatDroppedByVote(int seat);
 bool PartyBoard_NetplayWaiting(void);
+/* Continue without a dropped player (docs/ONLINE_DROP_VOTE.md). While another
+ * computer is silent (5 s), the banner's facts: the seats waited for, the time
+ * until the game stops for everyone (the 2-minute watchdog), and the vote. */
+typedef struct PartyBoardNetplayDropWait {
+    unsigned seats;      /* bit per seat waited for */
+    int msLeft, msTotal; /* until the game stops; msTotal = 120000 */
+    int votes, voters, needed;
+    unsigned localSeats; /* this computer's seats that can vote */
+    unsigned localVoted; /* ... and those that did */
+    int passed;          /* the vote passed: switching to computer players */
+    char who[160];       /* "Valentin's PC (Players 5-8)" */
+} PartyBoardNetplayDropWait;
+bool PartyBoard_NetplayDropWaitGet(PartyBoardNetplayDropWait *out);
+/* A seat whose controller is gone (its computer still plays): the first such seat. */
+typedef struct PartyBoardNetplayControllerDrop {
+    int seat;            /* 0-7 */
+    int mine;            /* a seat of this computer */
+    int votes, voters, needed;
+    unsigned localVoted;
+    unsigned localSeats; /* this computer's seats that can vote on it */
+    int others;          /* more seats with a disconnected controller */
+} PartyBoardNetplayControllerDrop;
+bool PartyBoard_NetplayControllerDropGet(PartyBoardNetplayControllerDrop *out);
+/* True while the drop banner speaks for a stall (another computer unheard for
+ * 2 s or more in a session that can vote): the old waiting toast stays away. */
+bool PartyBoard_NetplayDropBannerOwnsWait(void);
+/* Seats now played by computer players after a drop (bit per seat). */
+unsigned PartyBoard_NetplayComputerSeats(void);
+/* The F1 menu's "Make Player N a computer" (this computer's own seat whose controller is gone). */
+bool PartyBoard_NetplayDropMenuChoose(void);
 /* True once a packet from the peer has ever been accepted. */
 bool PartyBoard_NetplayPeerSeen(void);
 const char *PartyBoard_NetplayError(void);

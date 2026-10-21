@@ -19,6 +19,7 @@
 #ifdef TARGET_PC
 #include "port/port_version.h"
 #include "port/netplay_runtime.h"
+#include "game/saveload.h"
 #include <stdio.h>
 #endif
 
@@ -174,7 +175,17 @@ void fn_1_414(void)
     espAttrReset(lbl_1_bss_152[9], HUSPR_ATTR_DISPOFF);
     espDrawNoSet(lbl_1_bss_152[9], 127);
     {
-        s16 result = fn_1_2490();
+        s16 result;
+#ifdef TARGET_PC
+        /* Continuing an online party (docs/ONLINE_CONTINUE.md): Continue party was
+           chosen in the lobby, so mode select picks Party Mode itself on every copy. */
+        if (SLOnlinePartyContinuePending()) {
+            OSReport("[netplay] continue: mode select skipped (Continue party was chosen in the lobby); straight to Party Mode\n");
+            result = 0;
+        }
+        else
+#endif
+        result = fn_1_2490();
         if (result == -1) {
             HuAudSeqAllFadeOut(1000);
             WipeColorSet(0, 0, 0);

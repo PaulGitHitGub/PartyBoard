@@ -1,7 +1,7 @@
 <div align="center">
   <img src="PartyBoard-build/res/logo.png" alt="PartyBoard" width="640">
 
-  <h3>PartyBoard Beta</h3>
+  <h3>PartyBoard Beta 1.2</h3>
 
   <p>Mario Party 4 on Mac and Windows, with 8-player parties and online play.</p>
 
@@ -29,6 +29,8 @@ Mario Party 4. It adds 8-player parties, online play between Macs and PCs, and p
 | **System** | macOS 11 Big Sur or newer | Windows 10 or Windows 11 |
 | **Graphics** | Metal (built in) | Direct3D 12 graphics card (Vulkan also works) |
 | **Not supported** | Intel Macs | Windows on ARM, 32-bit Windows |
+
+Beta 1.2 passed fresh eight-seat, ten-round Mac/Windows tests on all six boards, plus drop/Continue and extracted-download checks. New profiles use 1× internal resolution and 1× shadows. Friends, Achievements and RetroAchievements settings have been removed; Tailscale and phone controllers are retained.
 
 All downloads are on the [Releases page](https://github.com/PaulGitHitGub/PartyBoard/releases).
 Nothing to install: unzip and run.
@@ -80,17 +82,17 @@ Saves and settings are kept in `~/Library/Application Support/MarioPartyRD/Party
 
 ## Features
 
-**New in PartyBoard Beta**
+**PartyBoard Beta 1.2**
 
 - **8-player parties.** Party Mode now has an 8-player option as Battle Royale or Tag Battle (4 teams of 2).
   Minigames are played in two groups of four that change each round, so everyone faces everyone about equally.
-  Every board, item, Boo, Bowser and Last 5 Turns event works with 8 players.
+  All six boards passed automated eight-player, ten-round tests; some event and controller combinations remain unverified.
 - **Online play, Mac and Windows together.** Play over [Tailscale](https://tailscale.com) with up to 8 players.
   Several people can share one computer, for example 4 on a Mac and 4 on a PC.
 - **Pause for everyone.** In online games, any player can pause the game for all players.
-- **Save and continue.** 8-player parties save after every minigame and continue later, like 4-player parties.
-  Online games use the host's save.
-- **Phones as controllers.** Up to 4 phones on the same Wi-Fi join with a link or QR code. No app needed.
+- **Continue an online party.** Resume from a saved results checkpoint. Any participating computer with the save can host and send it to the others. One saved online party slot is kept. Missing computers can be replaced by Hard computer players.
+- **Keep playing after a disconnect.** Remaining people can hold START to vote to replace a disconnected computer's players with Hard computer players. The replacement is remembered when continuing later.
+- **Phones as controllers.** The retained helpers support up to 4 phones on Mac and 8 on Windows, joining with a link or QR code. Phone input was not hands-on tested for this release.
 - **Upscaled textures.** Sharper boards, characters and menus, included in the download.
 - **Controller button prompts** in the game show Xbox, PlayStation or Switch buttons to match your controller.
 
@@ -101,7 +103,7 @@ Saves and settings are kept in `~/Library/Application Support/MarioPartyRD/Party
 - Any resolution, from the original 640×480 up to 4K and beyond (Settings → Video → Internal Resolution). It works online too, and each player can pick their own.
 - Higher frame rates, VSync, fullscreen or windowed.
 - Modern controllers and keyboard, with remapping.
-- Extras such as unlock-all-minigames, a speedrun mode and RetroAchievements.
+- Extras such as unlock-all-minigames and a speedrun mode.
 
 ## Playing online
 
@@ -124,7 +126,7 @@ On Windows, if the firewall asks about PartyBoard, tick **Private networks** and
 ## Known issues
 
 This is a beta. Please report problems on the [Issues page](https://github.com/PaulGitHitGub/PartyBoard/issues),
-with the logs from **F1 → Send Logs**.
+with the logs from **Settings → Interface → Send Logs** (open Settings from the start screen or F1 menu).
 
 - **Not play-tested by real groups yet.** 8-player parties and online games have passed long automated tests
   with computer players, but not yet a full game with real people, controllers and internet connections.
@@ -132,9 +134,9 @@ with the logs from **F1 → Send Logs**.
 - **Windows has had less testing than the Mac**, especially with real controllers, sound and online play.
 - **Online needs identical files.** The lobby turns away players whose PartyBoard version or disc image file
   differs, even if it's the same game in another format.
-- **No rejoining online.** If a computer drops out, the game stops for everyone after 2 minutes.
+- **No mid-game rejoining by a disconnected computer.** Remaining people can vote to replace its players with Hard computer players. The saved party can be continued later.
 - Online games run at 60 FPS and in 4:3; higher frame rates and widescreen are offline only. Resolution and the upscaled textures work online too.
-- Phones: up to 4 for now. Support for 8 phones comes in an update.
+- Physical controllers, audible sound, Windows desktop D3D12, phones and a full friends' party were not hands-on tested for Beta 1.2. Automated checks used scripted inputs and dummy audio.
 
 ## Building from source
 
@@ -145,7 +147,7 @@ The source is in [`PartyBoard-build/`](PartyBoard-build). Follow upstream's
 cd PartyBoard-build
 cmake --preset <your platform preset> -B build/release \
   -DPARTYBOARD_EXPERIMENTAL_MUSYX_AUDIO=ON -DPARTYBOARD_NO_FMA=ON -DPARTYBOARD_SHARED_MATH=ON \
-  -DPARTY_BOARD_ENABLE_SENTRY_NATIVE=OFF
+  -DPARTYBOARD_HD_BETA=ON -DPARTY_BOARD_ENABLE_SENTRY_NATIVE=OFF -DPARTYBOARD_RELEASE_VERSION=1.2
 cmake --build build/release
 cmake --install build/release
 ```

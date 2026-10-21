@@ -5,6 +5,7 @@
 #include "port/netplay_transport.hpp"
 #include "port/netplay_pad.hpp"
 #include "port/netplay_progress.hpp"
+#include "port/lottery_test_walk.hpp"
 #include "port/netplay_canonical.hpp"
 #include "port/rollback.hpp"
 #include "port/rollback_audio.hpp"
@@ -27,6 +28,7 @@
 #include "partyboard_version.h"
 
 extern "C" {
+#include "game/board/lottery.h"
 #include "game/gamework.h"
 #include "game/gamework_data.h"
 #include "game/pad.h"
@@ -149,6 +151,9 @@ struct InputSlot {
     // seat's, extra[k - 1] the seat k places after it.
     std::uint8_t seats = 1;
     std::array<PartyBoardRollbackInput, rollback::kMaxPlayers - 1> extra {};
+    // Protocol 11: each seat's command byte for this frame (index k as above;
+    // docs/ONLINE_DROP_VOTE.md). Part of the input: every copy reads it on the frame.
+    std::array<std::uint8_t, rollback::kMaxPlayers> command {};
 };
 
 // The input of the k-th seat (0 = the computer's first seat) a slot speaks for.
@@ -199,6 +204,73 @@ struct LocalSeat {
     std::string controller;
 };
 
+// Continue without a dropped player (docs/ONLINE_DROP_VOTE.md, protocol 11).
+// Two ways a seat stops being played by a person:
+//  - its computer goes silent: the game is stopped (lockstep waits for it), so the
+//    remaining computers vote beside the input (Control packets). The lowest
+//    remaining computer coordinates: once a majority of the remaining people voted
+//    it declares the vote passed, every remaining computer stops listening to the
+//    silent one and reports the last frame it holds that computer's input for (and
+//    relays those inputs), and the coordinator fixes the first frame without it:
+//    one past the latest frame anyone holds. Every copy plays the frames before it
+//    with the real input (relayed if it missed some) and from it on treats those
+//    seats as computer players. Every copy repeats the agreement, so it reaches all.
+//  - its controller is gone but its computer still plays: the frame's input carries
+//    a command byte per seat (controller gone, a vote, or "make this seat of mine a
+//    computer"), so every copy counts the same votes on the same frame and switches
+//    the seat on that frame.
+struct DropReport {
+    bool valid = false;
+    std::uint64_t heardMs = 0;
+    std::uint32_t frame = 0;
+    std::uint8_t silent = 0;   // the seats its ballot is about (the computers it hears nothing from)
+    std::uint8_t votes = 0;    // its seats that voted to continue without them
+    std::uint8_t frozen = 0;   // the passed vote it acted on (stopped listening to those seats)
+    std::uint8_t pass = 0;     // the vote it declared passed (the coordinator)
+    std::array<std::uint32_t, rollback::kMaxPlayers> high {}; // per lead: last frame it holds that computer's input for
+    std::array<bool, rollback::kMaxPlayers> highKnown {};
+};
+
+struct DropVote {
+    DropVote() { dropFrom.fill(UINT32_MAX); }
+    // Agreed: per lead seat, the first frame played without that computer (UINT32_MAX: still playing).
+    std::array<std::uint32_t, rollback::kMaxPlayers> dropFrom {};
+    std::uint8_t droppedSeats = 0;   // every seat of an agreed dropped computer
+    std::uint8_t computerSeats = 0;  // seats now played by computer players (applied on their frame)
+    // The vote while waiting for a silent computer.
+    std::uint8_t silent = 0;         // this copy's ballot: the seats it hears nothing from (5 s)
+    std::uint8_t localVotes = 0;     // this computer's seats that voted for `silent`
+    std::uint8_t frozen = 0;         // a passed vote this copy acted on
+    std::uint8_t pass = 0;           // as coordinator: the vote it declared passed
+    std::array<DropReport, rollback::kMaxPlayers> reports {}; // by lead seat
+    std::uint64_t lastSendMs = 0;
+    std::uint64_t activeUntilMs = 0; // keep repeating Control packets until
+    std::uint32_t sequence = 0;
+    std::uint64_t waitStartMs = 0;   // when the banner's countdown started (logging)
+    std::string tallyLogged;
+    std::uint8_t comebackLogged = 0;
+    bool contradictionLogged = false;
+    // Per local seat k: hold START to vote while waiting, and the command byte state.
+    std::array<std::uint64_t, rollback::kMaxPlayers> holdSinceMs {};
+    std::array<bool, rollback::kMaxPlayers> holdFired {};
+    std::array<std::uint8_t, rollback::kMaxPlayers> voteFor {};   // seat + 1 this person votes to make a computer player, 0 none
+    std::array<bool, rollback::kMaxPlayers> direct {};           // ... as its own computer's choice (F1 menu)
+    std::array<bool, rollback::kMaxPlayers> ctrlSeen {};         // a controller fed this seat at some point
+    std::array<std::uint64_t, rollback::kMaxPlayers> ctrlNothingSinceMs {};
+    std::array<bool, rollback::kMaxPlayers> ctrlGone {};         // reported in this seat's command byte
+    // Deterministic, from the applied command bytes (identical on every copy).
+    std::uint8_t ctrlGoneSeats = 0;
+    std::array<std::uint8_t, rollback::kMaxPlayers> tally {};    // per target seat: the seats that voted yes on the last frame
+    std::array<std::uint8_t, rollback::kMaxPlayers> tallyVoters {}; // ... and the seats that could vote
+    // Seats made computer players because their controller was gone (or by their own
+    // computer's choice): handed back to the person when the controller returns.
+    std::uint8_t ctrlComputerSeats = 0;
+    std::array<std::uint8_t, rollback::kMaxPlayers> lastCommand {};
+    // Test aids PARTYBOARD_NETPLAY_TEST_DROPVOTE / _CTRLVOTE / _MAKECOM (seconds), see docs.
+    int testVoteAfterS = -1, testCtrlVoteAfterS = -1, testMakeComAfterS = -1;
+    std::uint64_t ctrlBannerSinceMs = 0;
+};
+
 struct Runtime {
     UdpTransport transport;
     SessionProgress progress;
@@ -244,6 +316,9 @@ struct Runtime {
     // number cannot stand in for this: the list only accepts a move once its
     // six panels have settled, and when that happens depends on load times.
     bool walkMenuReady = false;
+    // Test walk: how often the party's end (mstory3Dll) has been entered. The second
+    // entry is the final results page, which A only reopens; the walk sends START there.
+    int walkEndEntries = 0;
     // Test-only override of the party turn count. A twenty-turn game takes
     // over two hours, so the end of a game - final turn, bonus stars, results,
     // ending sequence - had never once run. Shortening the game exercises all
@@ -358,6 +433,11 @@ struct Runtime {
     int rollbackSessionContext = -1;
     int observedContext = -1;
     int probeContext = -1; // Set only by the headless PAD regression probe.
+    // Continue without a dropped player (docs/ONLINE_DROP_VOTE.md).
+    DropVote drop;
+    // Per lead seat: the person's nickname and "Mac"/"PC", from the lobby (--netplay-name).
+    std::array<std::string, rollback::kMaxPlayers> computerName {};
+    std::array<std::string, rollback::kMaxPlayers> computerKind {};
 };
 
 Runtime gRuntime;
@@ -378,11 +458,18 @@ bool isLocalSeat(const Runtime &runtime, std::uint8_t seat)
     return seat >= runtime.localPlayer && seat < runtime.localPlayer + runtime.localSeatCount;
 }
 
-// The first seat of another computer: what the link, the state stream, the
-// sequence numbers and the "silent" detection are kept by.
-bool isRemoteLead(const Runtime &runtime, std::uint8_t seat)
+// The first seat of another computer in this session, dropped or not.
+bool isSessionRemoteLead(const Runtime &runtime, std::uint8_t seat)
 {
     return seat < runtime.playerCount && !isLocalSeat(runtime, seat) && runtime.seatLead[seat] == seat;
+}
+
+// The first seat of another computer still playing: what the link, the state
+// stream, the sequence numbers and the "silent" detection are kept by. A computer
+// the others agreed to continue without (docs/ONLINE_DROP_VOTE.md) is not one.
+bool isRemoteLead(const Runtime &runtime, std::uint8_t seat)
+{
+    return isSessionRemoteLead(runtime, seat) && runtime.drop.dropFrom[seat] == UINT32_MAX;
 }
 
 // "seat 5" or "seats 5-8" (1-based), for log lines about a computer.
@@ -635,7 +722,7 @@ void resetOverlayTimeline(std::uint8_t contextId)
     gRuntime.lockstepPrepared = false;
     gRuntime.lastStateRepairMs = 0;
     gRuntime.localHistory = {};
-    gRuntime.peerHistory = {};
+    for (auto &history : gRuntime.peerHistory) { history.fill({}); }
     gRuntime.lastPeer = {};
     gRuntime.lastPeer = {};
     gRuntime.lastLocal = {};
@@ -1230,6 +1317,8 @@ void forceRollbackTick(std::uint32_t frame)
     probe.recording = true;
 }
 
+std::uint8_t dropLocalCommand(const Runtime &runtime, std::uint8_t k); // netplay_drop.inc
+
 // This computer's input for a frame: every local seat's pending input.
 void storeLocalInputs(std::array<InputSlot, kHistorySize> &history, std::uint32_t frame)
 {
@@ -1238,6 +1327,8 @@ void storeLocalInputs(std::array<InputSlot, kHistorySize> &history, std::uint32_
     slot.captureContext = static_cast<std::uint32_t>(gRuntime.observedContext);
     slot.seats = gRuntime.localSeatCount;
     for (std::uint8_t k = 1; k < gRuntime.localSeatCount; ++k) slot.extra[k - 1] = gRuntime.local[k].pending;
+    // Protocol 11: each seat's controller report and vote, on this frame for everyone.
+    for (std::uint8_t k = 0; k < gRuntime.localSeatCount; ++k) slot.command[k] = dropLocalCommand(gRuntime, k);
 }
 
 const InputSlot *findInput(const std::array<InputSlot, kHistorySize> &history, std::uint32_t frame)
@@ -1262,7 +1353,9 @@ bool collectPeerInputs(const Runtime &runtime, std::uint32_t frame,
     // One slot per other computer, kept at its first seat; it holds the input
     // of every seat that computer owns.
     for (std::uint8_t seat = 0; seat < runtime.playerCount; ++seat) {
-        if (!isRemoteLead(runtime, seat)) continue;
+        // A dropped computer's input is still needed up to the agreed frame
+        // (docs/ONLINE_DROP_VOTE.md); from it on its seats are computer players.
+        if (!isSessionRemoteLead(runtime, seat) || frame >= runtime.drop.dropFrom[seat]) continue;
         slots[seat] = findInput(runtime.peerHistory[seat], frame);
         if (slots[seat] == nullptr) everyPeerReady = false;
     }
@@ -1304,6 +1397,7 @@ bool sendInput(std::uint32_t frame, const PartyBoardRollbackInput &input, bool r
     outgoing.captureContext = slot ? slot->captureContext : static_cast<std::uint32_t>(gRuntime.observedContext);
     // Every seat of this computer, each with its own pause word (protocol 10).
     outgoing.seats = gRuntime.localSeatCount;
+    if (slot) outgoing.command = slot->command;
     for (std::uint8_t k = 1; k < gRuntime.localSeatCount; ++k) {
         if (slot) outgoing.extraInput[k - 1] = slot->extra[k - 1];
         const LocalSeat &extra = gRuntime.local[k];
@@ -2035,6 +2129,9 @@ void servicePause(Runtime &runtime)
     if (anyLocalPaused || heard) runtime.progress.commit(now);
 }
 
+// Protocol 11: continue without a dropped player (docs/ONLINE_DROP_VOTE.md).
+#include "netplay_drop.inc"
+
 void receivePendingPackets()
 {
     InputPacket packet {};
@@ -2042,6 +2139,14 @@ void receivePendingPackets()
     bool sawDifferentContext = false;
     // A busy peer must never monopolize the game thread.
     for (unsigned received = 0; received < 64 && gRuntime.transport.receiveInput(packet); ++received) {
+        // A computer the others continue (or are about to continue) without: ignored
+        // (docs/ONLINE_DROP_VOTE.md); it can't rejoin mid-game.
+        if (packet.sessionId == kSessionId && isSessionRemoteLead(gRuntime, packet.player)
+            && dropIgnores(gRuntime, packet.player)) {
+            noteDroppedComeback(gRuntime, packet.player);
+            ++gRuntime.rejectedPackets;
+            continue;
+        }
         gRuntime.lastWireFrame = packet.frame;
         gRuntime.lastPacketMs = monotonicMs();
         // Any seat in this session other than our own. The old test named the one
@@ -2051,6 +2156,12 @@ void receivePendingPackets()
         const bool fromKnownSeat = isRemoteLead(gRuntime, packet.player);
         if (packet.sessionId != kSessionId || !fromKnownSeat) {
             ++gRuntime.rejectedPackets;
+            continue;
+        }
+        // Protocol 11: the drop vote travels beside the input (it must work while
+        // the game is stopped); it never touches the input timeline.
+        if (packet.type == PacketType::Control) {
+            receiveDropControl(packet);
             continue;
         }
         // Several people on one computer: a computer speaks for exactly the seats
@@ -2171,6 +2282,8 @@ void receivePendingPackets()
         // Validate retained duplicates even after their input frame committed.
         const auto samePacketInputs = [&packet](const InputSlot &slot) {
             if (!rollback::inputsEqual(slot.input, packet.input) || slot.seats != packet.seats) return false;
+            for (std::uint8_t k = 0; k < packet.seats; ++k)
+                if (slot.command[k] != packet.command[k]) return false;
             for (std::uint8_t k = 1; k < packet.seats; ++k)
                 if (!rollback::inputsEqual(slot.extra[k - 1], packet.extraInput[k - 1])) return false;
             return true;
@@ -2207,6 +2320,7 @@ void receivePendingPackets()
             slot.captureContext = packet.captureContext;
             slot.seats = packet.seats;
             slot.extra = packet.extraInput;
+            slot.command = packet.command;
         } else if (!samePacketInputs(slot)
             || slot.captureContext != packet.captureContext) {
             ++gRuntime.rejectedPackets;
@@ -2387,12 +2501,16 @@ bool prepareRollbackTick()
 // four are exercised at the one width that behaves exactly as the old code did.
 bool seatReadinessSelfTest()
 {
-    Runtime probe;
+    // On the heap: a Runtime holds per-seat histories for up to 8 seats and is far
+    // bigger than Windows' 1 MB main-thread stack (the self-test died with
+    // STACK_OVERFLOW there; the Mac's 8 MB stack hid it).
+    auto probeOwner = std::make_unique<Runtime>();
+    Runtime &probe = *probeOwner;
     for (std::uint8_t count = 2; count <= rollback::kMaxPlayers; ++count) {
         for (std::uint8_t localSeat = 0; localSeat < count; ++localSeat) {
             probe.playerCount = count;
             probe.localPlayer = localSeat;
-            probe.peerHistory = {};
+            for (auto &history : probe.peerHistory) { history.fill({}); }
             std::array<const InputSlot *, rollback::kMaxPlayers> slots {};
 
             // Nobody has spoken: never ready, whatever the seat count.
@@ -2436,7 +2554,8 @@ bool seatReadinessSelfTest()
     // A frame is ready when every OTHER computer has spoken, once each, at its
     // first seat; the seats it owns besides are in that one slot.
     {
-        Runtime multi;
+        auto multiOwner = std::make_unique<Runtime>();
+        Runtime &multi = *multiOwner;
         multi.playerCount = 8;
         multi.localPlayer = 0;
         multi.localSeatCount = 4;
@@ -2456,7 +2575,7 @@ bool seatReadinessSelfTest()
         multi.localSeatCount = 1;
         multi.seatLead = {0, 0, 2, 3, 4, 5, 6, 7};
         multi.leadSeats = {2, 0, 1, 1, 1, 1, 1, 1};
-        multi.peerHistory = {};
+        for (auto &history : multi.peerHistory) { history.fill({}); }
         multi.peerHistory[0][10 % kHistorySize] = {10, {}, true};
         if (collectPeerInputs(multi, 10, slots)) return false; // seat 4's computer is still silent
         multi.peerHistory[3][10 % kHistorySize] = {10, {}, true};
@@ -2637,6 +2756,8 @@ extern "C" bool PartyBoard_NetplayConfigureFromArgs(int argc, char **argv)
     std::vector<std::tuple<std::uint8_t, std::string, std::uint16_t, std::uint8_t>> explicitPeers;
     bool fullGame = false;
     bool party8 = false;
+    std::string continueHash;
+    std::string continueMap;
     bool rollbackProbe = false;
     bool rollbackRequested = false;
 
@@ -2671,6 +2792,24 @@ extern "C" bool PartyBoard_NetplayConfigureFromArgs(int argc, char **argv)
             fullGame = true;
         } else if (argument == "--netplay-party8") {
             party8 = true;
+        } else if (argument == "--netplay-name" && index + 1 < argc) {
+            // "<first seat 0-7>:<Mac|PC>:<nickname>" from the lobby: who to name in the
+            // drop banner (docs/ONLINE_DROP_VOTE.md). Display only.
+            const std::string value = argv[++index];
+            const std::size_t a = value.find(':'), b = a == std::string::npos ? a : value.find(':', a + 1);
+            std::uint8_t first = 0;
+            if (b != std::string::npos && parseSeat(std::string_view(value).substr(0, a), first)) {
+                gRuntime.computerKind[first] = value.substr(a + 1, b - a - 1);
+                gRuntime.computerName[first] = value.substr(b + 1);
+            }
+        } else if (argument == "--netplay-continue" && index + 1 < argc) {
+            // Continue a saved online party (docs/ONLINE_CONTINUE.md): the party
+            // save's hash; the lobby put the save itself in the online profile.
+            continueHash = argv[++index];
+        } else if (argument == "--netplay-continue-map" && index + 1 < argc) {
+            // Continuing with another seat layout (another host, or computer players
+            // for a missing computer): the new seat of each saved seat.
+            continueMap = argv[++index];
         } else if (argument == "--netplay-rollback-probe") {
             rollbackProbe = true;
         } else if (argument == "--netplay-rollback") {
@@ -2737,6 +2876,16 @@ extern "C" bool PartyBoard_NetplayConfigureFromArgs(int argc, char **argv)
     }
     if (!host && !join) {
         return true;
+    }
+    if (!continueHash.empty() && !fullGame) {
+        std::fputs("Netplay: --netplay-continue needs --netplay-full.\n", stderr);
+        return false;
+    }
+    if (!continueHash.empty() && !partyboard::online::party::arm_continue(continueHash)) {
+        return false;
+    }
+    if (!continueMap.empty() && (continueHash.empty() || !partyboard::online::party::arm_continue_map(continueMap))) {
+        return false;
     }
     if (!argumentsValid || host == join) {
         std::fputs("Netplay: choose exactly one of --netplay-host <port> or --netplay-join <IPv4:port>; optional --netplay-delay <0-8>, --netplay-pad <1-4>, --netplay-players <2-8>, --netplay-seat <0-7 or first-last>, --netplay-peer <seat or first-last:ip:port>, --netplay-full, --netplay-party8, --netplay-rollback and --netplay-rollback-probe.\n", stderr);
@@ -2986,6 +3135,8 @@ extern "C" int PartyBoard_NetplayPeerPing(int seat)
     if (!gRuntime.enabled || seat < 0 || seat >= gRuntime.playerCount || isLocalSeat(gRuntime, static_cast<std::uint8_t>(seat))) {
         return -2;
     }
+    // A computer the others continued without has no link worth showing.
+    if (gRuntime.drop.dropFrom[gRuntime.seatLead[seat]] != UINT32_MAX) return -2;
     // A seat of another computer: that computer's link.
     return gRuntime.transport.peerRoundTripMs(gRuntime.seatLead[seat]);
 }
@@ -3075,6 +3226,8 @@ bool captureSeatInput(Runtime &runtime, LocalSeat &ls)
                 ls.startHoldActive = true;
                 ls.startHoldFired = false;
                 ls.startHoldSinceMs = now;
+            } else if (!ls.startHoldFired && now - ls.startHoldSinceMs >= 1000 && dropHoldVotes(runtime, ls)) {
+                ls.startHoldFired = true; // the hold was a vote (netplay_drop.inc), not a pause
             } else if (!ls.startHoldFired && now - ls.startHoldSinceMs >= 1000) {
                 ls.startHoldFired = true;
                 std::fprintf(stdout, "[netplay] pause: Start held 1 s at network frame %u (seat %u): pausing for everyone (the press does not reach the game)\n",
@@ -3260,6 +3413,47 @@ bool captureSeatInput(Runtime &runtime, LocalSeat &ls)
                 } else if (beat % 30 < 3 && (beat / 30) % 4 == 0) {
                     ls.pending.buttons = PAD_BUTTON_A;
                 }
+            } else if (runtime.walkPlan && BoardLotteryScratchActive()) {
+                // Scratch cards need the whole surface uncovered, not the
+                // repeating circle used to turn the ball-machine crank.
+                const auto stick = partyboard::test::lotteryScratchStick(held + seat * 17u);
+                ls.pending.stickX = stick[0];
+                ls.pending.stickY = stick[1];
+                if (beat % 30 < 3 && (beat / 30) % 4 == 0) {
+                    ls.pending.buttons = PAD_BUTTON_A;
+                }
+            } else if (runtime.walkPlan && BoardLotteryCrankActive()) {
+                // The lottery machine (board/lottery.c): its crank turns only while the
+                // current player's stick angle keeps moving clockwise (an unchanged value
+                // counts as letting go), and the generic walk taps the stick 3 frames at a
+                // time, so an 8-player test sat at "Rotate" for 30 minutes (shipped 1.1,
+                // 2026-10-19, round 5). Every seat turns its stick one 15-degree step a
+                // frame (only the current player's port is read); A keeps its slow beat for
+                // the prompts. Use the full raw +/-127 range: PADClamp reduces a
+                // 100-axis circle to at most 54, below the crank's 57.6 threshold.
+                // Integer table: inputs never depend on platform maths.
+                static constexpr std::array<std::array<std::int8_t, 2>, 24> kCircle = { {
+                    { 0, 127 }, { 33, 123 }, { 63, 110 }, { 90, 90 }, { 110, 63 }, { 123, 33 },
+                    { 127, 0 }, { 123, -33 }, { 110, -63 }, { 90, -90 }, { 63, -110 }, { 33, -123 },
+                    { 0, -127 }, { -33, -123 }, { -63, -110 }, { -90, -90 }, { -110, -63 }, { -123, -33 },
+                    { -127, 0 }, { -123, 33 }, { -110, 63 }, { -90, 90 }, { -63, 110 }, { -33, 123 } } };
+                static bool lotteryNoted = false;
+                if (!lotteryNoted) {
+                    lotteryNoted = true;
+                    std::printf("[NET TEST] walk_plan: lottery crank pattern (full-range stick turned clockwise every frame) from frame %u\n", runtime.frame);
+                }
+                const auto &step = kCircle[runtime.frame % kCircle.size()];
+                ls.pending.stickX = step[0];
+                ls.pending.stickY = step[1];
+                if (beat % 30 < 3 && (beat / 30) % 4 == 0) {
+                    ls.pending.buttons = PAD_BUTTON_A;
+                }
+            } else if (runtime.walkPlan && BoardLotteryActive()) {
+                // Keep the stick neutral at entry and prize dialogs. Rotating
+                // before the crank exists can select No and skip the test.
+                if (beat % 30 < 3 && (beat / 30) % 4 == 0) {
+                    ls.pending.buttons = PAD_BUTTON_A;
+                }
             } else if (runtime.walkPlan && runtime.playerCount > 2
                 && context == static_cast<int>(MenuProbeOverlay::instDll)) {
                 // The instructions screen ORs all human pads and accepts
@@ -3273,6 +3467,12 @@ bool captureSeatInput(Runtime &runtime, LocalSeat &ls)
                 if ((seat == 0 || runtime.party8) && held > 60 && runtime.frame % 120 < 3) {
                     ls.pending.buttons = PAD_BUTTON_START;
                 }
+            } else if (runtime.walkPlan && runtime.walkEndEntries >= 2
+                && context == static_cast<int>(MenuProbeOverlay::mstory3Dll)) {
+                // The party's final results: they leave only on START from the winner's pad
+                // (mstory3Dll result.c), and A reopens the detail pages; so START alone,
+                // every seat, every 120 frames. Reaches the end-of-party save point.
+                if (held > 120 && runtime.frame % 120 < 3) ls.pending.buttons = PAD_BUTTON_START;
             } else if (beat % 30 < 3) {
                 switch ((beat / 30) % 8) {
                 case 2:
@@ -3327,7 +3527,8 @@ void logSeatControllers(Runtime &runtime)
     for (std::uint8_t k = 0; k < runtime.localSeatCount; ++k) {
         LocalSeat &ls = runtime.local[k];
         char device[160];
-        PartyBoard_PadPortDescribe(ls.pad, device, sizeof(device));
+        const bool any = PartyBoard_PadPortDescribe(ls.pad, device, sizeof(device)) != 0;
+        dropWatchController(runtime, k, any);
         if (ls.controller != device) {
             ls.controller = device;
             std::fprintf(stdout, "[netplay] seat %u <- this %s's controller port %u: %s (network frame %u).\n",
@@ -3410,6 +3611,7 @@ extern "C" bool PartyBoard_NetplayTick(void)
         : PartyBoard_NetplayMinigameId());
     if (runtime.observedContext != gameContext) {
         runtime.observedContext = gameContext;
+        if (gameContext == static_cast<int>(MenuProbeOverlay::mstory3Dll)) ++runtime.walkEndEntries;
         runtime.contextEntryFrame = runtime.frame;
         // A menu that is no longer on screen is no longer listening, whatever
         // it last reported.
@@ -3456,6 +3658,18 @@ extern "C" bool PartyBoard_NetplayTick(void)
     // alone does not say whose.
     {
         const std::uint64_t now = monotonicMs();
+        // Always on, every 30 s: the round trip to each other computer (the ping box's numbers).
+        static std::uint64_t nextPingLog = 0;
+        if (now >= nextPingLog) {
+            nextPingLog = now + 30000;
+            std::string pings;
+            for (std::uint8_t seat = 0; seat < runtime.playerCount; ++seat) {
+                if (!isRemoteLead(runtime, seat)) continue;
+                const int ms = runtime.transport.peerRoundTripMs(seat);
+                pings += " " + seatBlockText(seat, runtime.leadSeats[seat]) + (ms < 0 ? std::string(" --;") : " " + std::to_string(ms) + " ms;");
+            }
+            std::fprintf(stdout, "[netplay] ping at network frame %u:%s\n", runtime.frame, pings.c_str());
+        }
         // Per computer: a computer that drops takes all its seats with it.
         for (std::uint8_t seat = 0; seat < runtime.playerCount; ++seat) {
             if (!isRemoteLead(runtime, seat) || runtime.peerHeardMs[seat] == 0) continue;
@@ -3490,11 +3704,18 @@ extern "C" bool PartyBoard_NetplayTick(void)
             seats += part;
         }
         std::fprintf(stdout, "[netplay] stopped at network frame %u:%s\n", runtime.frame, seats.c_str());
+        if (runtime.drop.silent != 0) {
+            const DropTally tally = dropWaitTally(runtime, runtime.drop.silent);
+            std::fprintf(stdout, "[netplay] drop: vote failed: %d of %d voted to continue without %s, %d needed, when the 2 minutes "
+                "ran out; countdown ended, the game stops for everyone.\n", tally.votes, tally.voters,
+                playersText(runtime.drop.silent).c_str(), tally.needed);
+        }
         failSession(failure == ProgressFailure::NoPeer
             ? "No compatible player joined within 2 minutes." : "No progress for 2 minutes: the connection was lost or the game got stuck.");
         return false;
     }
     receivePendingPackets();
+    serviceDrop(runtime);
     serviceStateRepair();
     if (!runtime.error.empty()) return false;
 
@@ -3618,6 +3839,7 @@ extern "C" bool PartyBoard_NetplayTick(void)
             LocalSeat &ls = runtime.local[k];
             if (captureSeatInput(runtime, ls)) ls.pending.buttons |= PAD_BUTTON_START;
         }
+        dropServiceControllerTests(runtime);
         storeLocalInputs(runtime.localHistory, runtime.frame + runtime.inputDelay);
         runtime.localCaptured = true;
         // Advertise the captured future sample immediately, including while
@@ -3710,6 +3932,8 @@ extern "C" bool PartyBoard_NetplayTick(void)
             const std::uint8_t lead = runtime.seatLead[seat];
             if (peerSlot[lead] != nullptr) applied[seat] = slotInput(*peerSlot[lead], seat - lead);
         }
+        // Agreed drops, controller reports and votes on this frame (docs/ONLINE_DROP_VOTE.md).
+        dropApplyFrame(runtime, runtime.frame, localSlot, peerSlot, applied);
     }
     local = applied[runtime.localPlayer];
     const auto previousPeer = runtime.lastPeer;
@@ -3833,10 +4057,121 @@ extern "C" int PartyBoard_NetplayLocalSeatCount(void)
     return gRuntime.enabled ? gRuntime.localSeatCount : 1;
 }
 
+extern "C" int PartyBoard_NetplaySeatDroppedByVote(int seat)
+{
+    using namespace partyboard::netplay;
+    if (!gRuntime.enabled || seat < 0 || seat >= gRuntime.playerCount || isLocalSeat(gRuntime, static_cast<std::uint8_t>(seat))) {
+        return 0;
+    }
+    return gRuntime.drop.dropFrom[gRuntime.seatLead[seat]] != UINT32_MAX ? 1 : 0;
+}
+
+extern "C" int PartyBoard_NetplaySeatComputer(int seat, int *firstSeat, int *seatCount)
+{
+    using namespace partyboard::netplay;
+    if (!gRuntime.enabled || seat < 0 || seat >= gRuntime.playerCount) return 0;
+    const std::uint8_t first = isLocalSeat(gRuntime, static_cast<std::uint8_t>(seat)) ? gRuntime.localPlayer : gRuntime.seatLead[seat];
+    if (firstSeat) *firstSeat = first;
+    if (seatCount) *seatCount = isLocalSeat(gRuntime, first) ? gRuntime.localSeatCount : gRuntime.leadSeats[first];
+    return 1;
+}
+
 extern "C" unsigned PartyBoard_NetplayLocalSeatMask(void)
 {
     using namespace partyboard::netplay;
     return ((1u << gRuntime.localSeatCount) - 1u) << gRuntime.localPlayer;
+}
+
+// ---- Continue without a dropped player: what the overlay and the F1 menu use
+// (docs/ONLINE_DROP_VOTE.md). Display and local choices only; the game changes on
+// the synchronized timeline (netplay_drop.inc).
+extern "C" bool PartyBoard_NetplayDropWaitGet(PartyBoardNetplayDropWait *out)
+{
+    using namespace partyboard::netplay;
+    const Runtime &runtime = gRuntime;
+    if (!out || !dropAvailable(runtime) || !runtime.error.empty()) return false;
+    const DropVote &drop = runtime.drop;
+    const std::uint8_t target = drop.frozen ? drop.frozen : drop.silent;
+    if (target == 0) return false;
+    *out = PartyBoardNetplayDropWait {};
+    out->seats = target;
+    out->msTotal = 120000;
+    out->msLeft = static_cast<int>(runtime.progress.remaining(monotonicMs()));
+    const DropTally tally = dropWaitTally(runtime, target);
+    out->votes = tally.votes;
+    out->voters = tally.voters;
+    out->needed = tally.needed;
+    out->localSeats = localMask(runtime) & ~drop.computerSeats;
+    out->localVoted = drop.silent == target ? drop.localVotes : 0;
+    out->passed = drop.frozen != 0 || drop.pass != 0;
+    std::snprintf(out->who, sizeof(out->who), "%s", computersText(runtime, target).c_str());
+    return true;
+}
+
+extern "C" bool PartyBoard_NetplayControllerDropGet(PartyBoardNetplayControllerDrop *out)
+{
+    using namespace partyboard::netplay;
+    const Runtime &runtime = gRuntime;
+    if (!out || !dropAvailable(runtime) || !runtime.error.empty()) return false;
+    const DropVote &drop = runtime.drop;
+    const std::uint8_t gone = static_cast<std::uint8_t>(drop.ctrlGoneSeats & ~drop.computerSeats);
+    if (gone == 0) return false;
+    std::uint8_t target = 0;
+    while (!(gone & (1u << target))) ++target;
+    *out = PartyBoardNetplayControllerDrop {};
+    out->seat = target;
+    out->mine = isLocalSeat(runtime, target) ? 1 : 0;
+    unsigned voted = 0, eligible = 0;
+    for (std::uint8_t k = 0; k < runtime.localSeatCount; ++k) {
+        const std::uint8_t seat = runtime.local[k].seat;
+        if (!(drop.tallyVoters[target] & (1u << seat))) continue;
+        eligible |= 1u << seat;
+        if (drop.voteFor[k] == target + 1 && !drop.direct[k]) voted |= 1u << seat;
+    }
+    // A vote counts on the timeline a few frames later; count this computer's own at once.
+    out->votes = popcount8(static_cast<std::uint8_t>((drop.tally[target] | voted) & drop.tallyVoters[target]));
+    out->voters = popcount8(drop.tallyVoters[target]);
+    out->needed = dropNeeded(out->voters);
+    out->localVoted = voted;
+    out->localSeats = eligible;
+    out->others = popcount8(gone) - 1;
+    return true;
+}
+
+extern "C" bool PartyBoard_NetplayDropBannerOwnsWait(void)
+{
+    using namespace partyboard::netplay;
+    const Runtime &runtime = gRuntime;
+    if (!dropAvailable(runtime) || !runtime.error.empty() || !runtime.progress.connected()) return false;
+    if (runtime.drop.silent != 0 || runtime.drop.frozen != 0) return true;
+    const std::uint64_t now = monotonicMs();
+    for (std::uint8_t seat = 0; seat < runtime.playerCount; ++seat)
+        if (isRemoteLead(runtime, seat) && runtime.peerHeardMs[seat] != 0 && now - runtime.peerHeardMs[seat] > 2000) return true;
+    return false;
+}
+
+extern "C" unsigned PartyBoard_NetplayComputerSeats(void)
+{
+    return partyboard::netplay::gRuntime.drop.computerSeats;
+}
+
+// F1 menu: "Continue without them" while waiting for a silent computer (every seat
+// of this computer votes), else the vote to make the first seat whose controller
+// is gone a computer player (or, for a seat of this computer, make it one).
+extern "C" bool PartyBoard_NetplayDropMenuChoose(void)
+{
+    using namespace partyboard::netplay;
+    Runtime &runtime = gRuntime;
+    if (!dropAvailable(runtime) || !runtime.error.empty()) return false;
+    DropVote &drop = runtime.drop;
+    // One vote per person (user, 2026-10-19): votes are held START only. The menu
+    // keeps one choice: this computer's own people make their seat a computer player.
+    PartyBoardNetplayControllerDrop info {};
+    if (!PartyBoard_NetplayControllerDropGet(&info) || !info.mine) return false;
+    if (!dropCastLocal(runtime, static_cast<std::uint8_t>(info.seat), true)) return false;
+    std::fprintf(stdout, "[netplay] drop: this computer makes player %d a computer player (F1 menu) at network frame %u; "
+        "it reaches every copy with the next input.\n", info.seat + 1, runtime.frame);
+    return true;
 }
 
 extern "C" bool PartyBoard_NetplayHasError(void)
@@ -3871,7 +4206,12 @@ extern "C" void PartyBoard_NetplayShutdown(void)
     }
     PartyBoard_RollbackAudioBridgeStop();
     gRuntime.transport.close();
-    gRuntime = Runtime {};
+    // Reset through a heap copy: 'gRuntime = Runtime {}' built the whole Runtime (per-seat
+    // histories for 8 seats) as a stack temporary, close to Windows' 1 MB stack limit.
+    {
+        auto fresh = std::make_unique<Runtime>();
+        gRuntime = std::move(*fresh);
+    }
 }
 
 static bool runNativePadRollbackSelfTest()
@@ -4077,6 +4417,7 @@ extern "C" bool PartyBoard_NetplayRuntimeRunSelfTest(void)
     };
     check("canonical-state", runCanonicalStateSelfTest());
     check("seat-readiness", partyboard::netplay::seatReadinessSelfTest());
+    check("drop-vote", partyboard::netplay::dropVoteSelfTest());
     check("timeline", partyboard::netplay::timelineSelfTest());
     check("progress", partyboard::netplay::progressSelfTest());
     check("pad-snapshot", HuPadSnapshotSelfTest());

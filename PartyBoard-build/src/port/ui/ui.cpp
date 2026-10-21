@@ -25,7 +25,6 @@
 
 #include "RmlUi/Debugger/Debugger.h"
 #include "aurora/lib/window.hpp"
-#include "cubeshelf.hpp"
 #include "input.hpp"
 #include "port/window_mode.hpp"
 #include "prelaunch.hpp"
@@ -249,6 +248,14 @@ bool is_prelaunch_open() noexcept
     });
 }
 
+bool menu_bar_open() noexcept
+{
+    return std::any_of(sDocumentStack.begin(), sDocumentStack.end(), [](const auto &doc) {
+        const auto *menu = dynamic_cast<const MenuBar *>(doc.get());
+        return menu != nullptr && !menu->closed() && menu->visible();
+    });
+}
+
 Document *top_document() noexcept
 {
     for (auto &doc : std::views::reverse(sDocumentStack)) {
@@ -295,7 +302,6 @@ void update() noexcept
 
     input::update_input();
     // A friend's invitation becomes a toast whichever screen the player is on, menu open or not.
-    cubeshelf::tick();
     const auto update_documents = [](auto &documents) {
         const std::size_t count = documents.size();
         for (std::size_t i = 0; i < count && i < documents.size(); ++i) {

@@ -4,7 +4,6 @@
 #include "touch_overlay.hpp"
 
 #include "aurora/lib/logging.hpp"
-#include "port/achievements.h"
 #include "port/main.h"
 #include "port/netplay_runtime.h"
 #include "magic_enum.hpp"
@@ -12,6 +11,7 @@
 #include "localization.hpp"
 
 #include <SDL3/SDL_gamepad.h>
+#include <vector>
 #include <SDL3/SDL_timer.h>
 #include <algorithm>
 #include <dolphin/pad.h>
@@ -36,6 +36,8 @@ namespace {
     <ping id="ping" />
     <paused id="paused" />
     <countdown id="countdown" />
+    <dropwait id="dropwait" />
+    <ctrldrop id="ctrldrop" />
     <menuhint id="menuhint" />
 </body>
 </rml>
@@ -60,12 +62,7 @@ namespace {
                 auto *span = append(heading, "span");
                 span->SetInnerRML(escape(ui_translate(toast.title)));
             }
-            if (toast.type == "achievement") {
-                auto *icon = append(heading, "icon");
-                icon->SetClass("trophy", true);
-                // mDoAud_seStartMenu(kSoundAchievementUnlock); // TODO PC
-            }
-            else if (toast.type == "controller") {
+            if (toast.type == "controller") {
                 auto *icon = append(heading, "icon");
                 icon->SetClass("controller", true);
             }
@@ -217,6 +214,8 @@ Overlay::Overlay()
     mPaused = mDocument->GetElementById("paused");
     mCountdown = mDocument->GetElementById("countdown");
     mMenuHint = mDocument->GetElementById("menuhint");
+    mDropWait = mDocument->GetElementById("dropwait");
+    mCtrlDrop = mDocument->GetElementById("ctrldrop");
     if (mMenuHint != nullptr) {
         mMenuHint->SetInnerRML(escape(ui_translate("Menu open: the game ignores your controller until you close it (B or Esc).")));
     }
@@ -279,6 +278,18 @@ void Overlay::update()
         }
     }
 
+    // The F1 menu bar's tab band runs across the top of the window: move the boxes
+    // anchored to the top (FPS, ping, toasts) below it while it shows (overlay.rcss).
+    {
+        const bool menuBar = menu_bar_open();
+        if (menuBar != mMenuBarOpen) {
+            mMenuBarOpen = menuBar;
+            mDocument->SetClass("menu-open", menuBar);
+            std::fprintf(stdout, "[overlay] menu bar %s: FPS/ping boxes and toasts %s\n", menuBar ? "open" : "closed",
+                menuBar ? "moved below its tab band" : "back in their corner");
+        }
+    }
+
     // While a PartyBoard menu is open the game gets no controller input (on
     // purpose); say so, so a menu left open doesn't look like a dead controller.
     if (mMenuHint != nullptr) {
@@ -332,6 +343,11 @@ void Overlay::update()
         std::fprintf(stdout, "[netplay] pause: hint shown (Hold START to pause the game for everyone)\n");
     }
 
+    // Online: another computer went silent. Until it comes back, the others vote to
+    // continue without it, or the 2 minutes run out, a banner with the real time left
+    // (docs/ONLINE_DROP_VOTE.md; 2026-10-19 the toast's bar showed the toast's own 6 s).
+    update_drop_banners();
+
     // Online, after the last pause is lifted inside a minigame: 3, 2, 1 before play goes on.
     if (mCountdown != nullptr) {
         const int count = PartyBoard_NetplayResumeCountdown();
@@ -367,15 +383,39 @@ void Overlay::update()
             const Uint64 now = SDL_GetPerformanceCounter();
             if (mPingLastUpdate == 0 || perfFreq == 0 || now - mPingLastUpdate >= perfFreq / 2) {
                 mPingLastUpdate = now;
-                std::string rml;
+                // One entry per OTHER computer (several people on one computer share one
+                // connection). With a single other computer the number alone says it all
+                // ("76 ms", the user's call 2026-10-19); with several, each is labelled by
+                // its players ("P5-8 12 ms", "P2 12 ms").
+                struct Entry { std::string label; int ms; };
+                std::vector<Entry> entries;
                 for (int seat = 0; seat < PartyBoard_NetplayPlayerCount(); ++seat) {
                     const int ms = PartyBoard_NetplayPeerPing(seat);
                     if (ms == -2) {
                         continue;
                     }
-                    const char *tone = ms < 0 ? "lost" : ms < 50 ? "good" : ms <= 100 ? "fair" : "poor";
-                    rml += fmt::format("<span class=\"{}\">P{} {}</span>", tone, seat + 1,
-                        ms < 0 ? std::string("--") : fmt::format("{} ms", ms));
+                    int first = seat, count = 1;
+                    PartyBoard_NetplaySeatComputer(seat, &first, &count);
+                    if (seat != first) {
+                        continue;
+                    }
+                    entries.push_back({count > 1 ? fmt::format("P{}-{}", first + 1, first + count) : fmt::format("P{}", first + 1), ms});
+                }
+                std::string rml;
+                std::string layout;
+                for (const Entry &entry : entries) {
+                    const char *tone = entry.ms < 0 ? "lost" : entry.ms < 50 ? "good" : entry.ms <= 100 ? "fair" : "poor";
+                    const std::string value = entry.ms < 0 ? std::string("--") : fmt::format("{} ms", entry.ms);
+                    rml += entries.size() == 1 ? fmt::format("<span class=\"{}\">{}</span>", tone, value)
+                                               : fmt::format("<span class=\"{}\">{} {}</span>", tone, entry.label, value);
+                    layout += (layout.empty() ? "" : ", ") + entry.label;
+                }
+                if (entries.size() == 1) {
+                    layout += " (one other computer: shown without a label)";
+                }
+                if (layout != mPingLayout) {
+                    mPingLayout = layout;
+                    std::fprintf(stdout, "[netplay] ping display: one entry per other computer: %s\n", layout.c_str());
                 }
                 mPing->SetInnerRML(rml);
             }
@@ -475,6 +515,101 @@ void Overlay::update()
         else {
             mCurrentToast->SetAttribute("open", "");
             mCurrentToast->SetPseudoClass("opened", true);
+        }
+    }
+}
+
+void Overlay::update_drop_banners()
+{
+    if (mDropWait != nullptr) {
+        PartyBoardNetplayDropWait wait {};
+        const bool show = PartyBoard_NetplayDropWaitGet(&wait);
+        if (!show) {
+            if (mDropWaitShown) {
+                mDropWaitShown = false;
+                mDropWaitText.clear();
+                mDropWait->RemoveAttribute("open");
+                std::fprintf(stdout, "[netplay] drop: banner hidden\n");
+            }
+        }
+        else {
+            const int seconds = (std::max(wait.msLeft, 0) + 999) / 1000;
+            // Once the vote passed the clock no longer matters: no time, a full bar.
+            std::string title = wait.passed ? fmt::format("Continuing without {}", wait.who)
+                                            : fmt::format("Waiting for {}\u2026 {}:{:02}", wait.who, seconds / 60, seconds % 60);
+            std::string hint;
+            if (wait.passed) {
+                hint = "Computer players take their places\u2026";
+            }
+            else if (wait.localSeats != 0 && (wait.localSeats & ~wait.localVoted) == 0) {
+                hint = "You voted to continue without them.";
+            }
+            else if (wait.localSeats != 0) {
+                hint = "Hold START to continue without them.";
+            }
+            const std::string votes = wait.passed ? std::string() : fmt::format("{} of {} voted \u00b7 {} needed", wait.votes, wait.voters, wait.needed);
+            const std::string text = title + "|" + hint + "|" + votes;
+            if (!mDropWaitShown || text != mDropWaitText) {
+                const bool first = !mDropWaitShown;
+                mDropWaitShown = true;
+                mDropWaitText = text;
+                std::string rml = "<div class=\"box\"><div class=\"title\">" + escape(title) + "</div>"
+                    + "<div class=\"bar\"><div class=\"fill\" id=\"dropfill\"></div></div>";
+                if (!hint.empty()) rml += "<div class=\"hint\">" + escape(hint) + "</div>";
+                if (!votes.empty()) rml += "<div class=\"votes\">" + escape(votes) + "</div>";
+                rml += "</div>";
+                mDropWait->SetInnerRML(rml);
+                mDropWait->SetAttribute("open", "");
+                // Every change of wording, and the clock every 10 s (not every second).
+                const std::string wording = hint + "|" + votes;
+                if (first || wording != mDropWaitLogged || seconds % 10 == 0) {
+                    mDropWaitLogged = wording;
+                    std::fprintf(stdout, "[netplay] drop: banner: %s | %s | %s (bar %.0f%%)\n", title.c_str(), hint.c_str(),
+                        votes.c_str(), 100.0 * wait.msLeft / std::max(wait.msTotal, 1));
+                }
+            }
+            mDropWait->SetClass("with-paused", mPaused != nullptr && mPaused->HasAttribute("open"));
+            if (auto *fill = mDropWait->GetElementById("dropfill")) {
+                const float percent = wait.passed ? 100.f : 100.f * static_cast<float>(std::clamp(wait.msLeft, 0, wait.msTotal)) / static_cast<float>(std::max(wait.msTotal, 1));
+                fill->SetProperty(Rml::PropertyId::Width, Rml::Property(percent, Rml::Unit::PERCENT));
+            }
+        }
+    }
+    if (mCtrlDrop != nullptr) {
+        PartyBoardNetplayControllerDrop pad {};
+        std::string text;
+        // Not while a PartyBoard menu is open: the banner sits where the menu's tabs are.
+        if (!mMenuHintShown && PartyBoard_NetplayControllerDropGet(&pad)) {
+            const int player = pad.seat + 1;
+            std::string title = fmt::format("Player {}'s controller disconnected", player);
+            if (pad.others > 0) title += fmt::format(" (and {} more)", pad.others);
+            std::string hint;
+            if (pad.mine) {
+                hint = fmt::format("Reconnect it, or press F1: Make Player {} a computer.", player);
+            }
+            else if (pad.localSeats != 0 && (pad.localSeats & ~pad.localVoted) != 0) {
+                // One vote per person, each with their own controller (user, 2026-10-19).
+                hint = fmt::format("Hold START to continue without Player {} \u00b7 {} of {} voted", player, pad.votes, pad.voters);
+            }
+            else if (pad.localVoted != 0) {
+                hint = fmt::format("You voted \u00b7 {} of {} voted \u00b7 {} needed", pad.votes, pad.voters, pad.needed);
+            }
+            else {
+                hint = fmt::format("{} of {} voted \u00b7 {} needed", pad.votes, pad.voters, pad.needed);
+            }
+            text = "<div class=\"box\"><div class=\"title\">" + escape(title) + "</div><div class=\"hint\">" + escape(hint) + "</div></div>";
+        }
+        if (text != mCtrlDropText) {
+            mCtrlDropText = text;
+            if (text.empty()) {
+                mCtrlDrop->RemoveAttribute("open");
+                std::fprintf(stdout, "[netplay] drop: controller banner hidden\n");
+            }
+            else {
+                mCtrlDrop->SetInnerRML(text);
+                mCtrlDrop->SetAttribute("open", "");
+                std::fprintf(stdout, "[netplay] drop: controller banner: %s\n", text.c_str());
+            }
         }
     }
 }

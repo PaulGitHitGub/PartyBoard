@@ -40,7 +40,7 @@ toast {
     filter: opacity(0);
     transform: scale(0.9);
     transform-origin: center;
-    transition: filter transform 0.2s cubic-in-out;
+    transition: filter transform top 0.2s cubic-in-out;
     padding: 18dp 24dp;
     gap: 8dp;
 }
@@ -281,6 +281,20 @@ ping[corner=br] { bottom: 12dp; right: 12dp; }
 ping.stacked[corner=tl], ping.stacked[corner=tr] { top: 64dp; }
 ping.stacked[corner=bl], ping.stacked[corner=br] { bottom: 64dp; }
 
+/* While the F1 menu bar is open, everything anchored to the top steps down by the
+   64dp tab band, so the FPS box and ping box never cover the last tab (QUIT) or the
+   close button. Offsets between the boxes stay as they are. `top`, not a transform:
+   on the PC a transform moved a box but not its text (see the pause banner). */
+fps, ping { transition: top 0.12s cubic-out; }
+body.menu-open fps[corner=tl], body.menu-open fps[corner=tr],
+body.menu-open ping[corner=tl], body.menu-open ping[corner=tr] { top: 76dp; }
+body.menu-open ping.stacked[corner=tl], body.menu-open ping.stacked[corner=tr] { top: 128dp; }
+body.menu-open toast { top: 104dp; }
+body.menu-open toast.below-one { top: 128dp; }
+body.menu-open toast.below-two { top: 180dp; }
+body.menu-open toast.menu-notification { top: 104dp; }
+body.menu-open toast.controller-warning { top: auto; }
+
 logo {
     position: absolute;
     width: 100dp;
@@ -394,6 +408,128 @@ paused .hint {
     color: #E0DBC8;
 }
 
+/* Online: another computer went silent (docs/ONLINE_DROP_VOTE.md). The pause
+   banner's box, with the real time left before the game stops (the bar empties over
+   the 2 minutes) and the vote to continue without them. Below the pause banner when
+   both show. */
+dropwait {
+    display: none;
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    margin-top: -80dp;
+    z-index: 98;
+    text-align: center;
+    pointer-events: none;
+}
+
+dropwait[open] {
+    display: block;
+}
+
+dropwait.with-paused {
+    margin-top: 70dp;
+}
+
+dropwait .box {
+    display: inline-block;
+    white-space: nowrap;
+    /* Fixed lower bound so the box does not change width as the clock and the vote line change. */
+    min-width: 640dp;
+    padding: 21dp 42dp 18dp 42dp;
+    border-radius: 18dp;
+    border: 3dp #009dda;
+    background-color: rgba(37, 59, 156, 100%);
+    text-align: center;
+}
+
+dropwait .title,
+dropwait .hint,
+dropwait .votes {
+    display: block;
+}
+
+dropwait .title {
+    font-family: "N64 Party";
+    font-size: 30dp;
+    font-weight: bold;
+    color: #F2C230;
+}
+
+dropwait .bar {
+    display: block;
+    height: 6dp;
+    margin-top: 12dp;
+    border-radius: 3dp;
+    background-color: rgba(17, 16, 10, 35%);
+}
+
+dropwait .fill {
+    display: block;
+    height: 6dp;
+    width: 100%;
+    border-radius: 3dp;
+    background-color: #009dda;
+}
+
+dropwait .hint {
+    margin-top: 12dp;
+    font-size: 21dp;
+    color: #E0DBC8;
+}
+
+dropwait .votes {
+    margin-top: 6dp;
+    font-size: 17dp;
+    color: rgba(224, 219, 200, 80%);
+}
+
+/* Online: a player's controller is gone while their computer still plays. The game
+   goes on, so a smaller box at the top, out of the way. */
+ctrldrop {
+    display: none;
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 10dp;
+    z-index: 97;
+    text-align: center;
+    pointer-events: none;
+}
+
+ctrldrop[open] {
+    display: block;
+}
+
+ctrldrop .box {
+    display: inline-block;
+    white-space: nowrap;
+    padding: 8dp 24dp;
+    border-radius: 14dp;
+    border: 2dp #009dda;
+    background-color: rgba(37, 59, 156, 100%);
+    text-align: center;
+}
+
+ctrldrop .title,
+ctrldrop .hint {
+    display: block;
+}
+
+ctrldrop .title {
+    font-family: "N64 Party";
+    font-size: 20dp;
+    font-weight: bold;
+    color: #F2C230;
+}
+
+ctrldrop .hint {
+    margin-top: 4dp;
+    font-size: 15dp;
+    color: #E0DBC8;
+}
+
 /* Online: 3, 2, 1 after the last pause is lifted inside a minigame. */
 countdown {
     display: none;
@@ -441,4 +577,16 @@ menuhint {
 
 menuhint[open] {
     display: block;
+}
+
+/* Narrow windows (down to the 640-wide minimum): the notice spans the width and wraps
+   instead of running off both edges. */
+@media (max-width: 760dp) {
+    menuhint {
+        left: 12dp;
+        right: 12dp;
+        transform: none;
+        white-space: normal;
+        text-align: center;
+    }
 }

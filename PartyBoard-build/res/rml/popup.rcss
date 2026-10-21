@@ -43,3 +43,133 @@ popup tab-bar tab {
     opacity: 0.35;
     color: #E0DBC8;
 }
+
+/* The band's layout (2026-10-19): a scrolling strip of tabs, then Quit and the close
+   button pinned at the right end. Online the band holds up to eight tabs, more than
+   fit at 4:3 or in the 640-wide minimum window. */
+popup tab-strip {
+    flex: 1 1 0;
+    min-width: 0;
+    position: relative;
+    display: flex;
+}
+
+popup tab-strip tab-bar {
+    flex: 1 1 0;
+}
+
+/* The close button no longer floats over the strip, so the strip needs no room for it. */
+popup tab-bar[closable] tab-end-spacer {
+    display: none;
+}
+
+/* More tabs that way: a solid cap of the band's blue with a chevron, then a short ramp
+   into the cut-off tab. */
+tab-fade {
+    display: none;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: 1;
+    pointer-events: none;
+}
+
+tab-fade[open] {
+    display: flex;
+}
+
+tab-fade.left { left: 0; flex-direction: row; }
+tab-fade.right { right: 0; flex-direction: row-reverse; }
+
+tab-fade fade-cap {
+    display: block;
+    width: 34dp;
+    background-color: #253B9C;
+    font-family: "Material Symbols Rounded";
+    font-weight: normal;
+    font-size: 26dp;
+    color: rgba(224, 219, 200, 85%);
+}
+
+tab-fade.left fade-cap { decorator: text("&#xe5cb;" center center); }
+tab-fade.right fade-cap { decorator: text("&#xe5cc;" center center); }
+
+tab-fade fade-ramp {
+    display: block;
+    width: 40dp;
+}
+
+tab-fade.left fade-ramp { decorator: horizontal-gradient(#253B9CFF #253B9C00); }
+tab-fade.right fade-ramp { decorator: horizontal-gradient(#253B9C00 #253B9CFF); }
+
+tab-pinned {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    border-left: 1dp rgba(0, 157, 218, 50%);
+    text-transform: uppercase;
+}
+
+/* Quit, pinned: the same tab as the ones in the strip. */
+tab-pinned tab {
+    display: block;
+    align-self: stretch;
+    padding: 0 18dp;
+    line-height: 64dp;
+    white-space: nowrap;
+    opacity: 0.35;
+    color: #E0DBC8;
+    transition: opacity color 0.12s cubic-out;
+    cursor: pointer;
+}
+
+tab-pinned tab:focus-visible,
+tab-pinned tab:hover {
+    opacity: 1;
+    decorator: vertical-gradient(#00b4fa00 #00b4fa26);
+}
+
+tab-pinned tab:active {
+    opacity: 1;
+    decorator: vertical-gradient(#00b4fa10 #00b4fa40);
+}
+
+tab-pinned tab:selected {
+    opacity: 1;
+    border-bottom: 4dp #00b4fa;
+}
+
+tab-pinned close {
+    display: block;
+    flex: 0 0 48dp;
+    width: 48dp;
+    height: 48dp;
+    margin: 0 8dp 0 0;
+    font-family: "Material Symbols Rounded";
+    font-weight: normal;
+    font-size: 20dp;
+    color: rgba(224, 219, 200, 70%);
+    border-radius: 6dp;
+    decorator: text("&#xe5cd;" center center);
+    transition: color background-color 0.12s linear-in-out;
+    cursor: pointer;
+}
+
+tab-pinned close:hover,
+tab-pinned close:focus-visible {
+    color: #fff;
+    background-color: rgba(0, 157, 218, 20%);
+}
+
+tab-pinned close:active {
+    color: #fff;
+    background-color: rgba(0, 157, 218, 40%);
+}
+
+/* Narrow windows: tighter tabs, so more of them show at once. */
+@media (max-width: 1100dp) {
+    popup tab-bar tab,
+    tab-pinned tab {
+        padding: 0 12dp;
+    }
+}

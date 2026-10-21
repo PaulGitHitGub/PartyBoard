@@ -28,13 +28,20 @@ protected:
 
 private:
     void update_safe_area() noexcept;
+    void update_overflow() noexcept;
 
     Rml::Element *mRoot;
     std::unique_ptr<TabBar> mTabBar;
     std::unique_ptr<Button> mCloseButton;
     Insets mTabBarPadding;
     float mTopMargin = 0.f;
+    Rml::Element *mPinned = nullptr;    // Quit and the close button, outside the scrolling strip
+    Rml::Element *mFadeLeft = nullptr;  // edge fades with a chevron: more tabs that way
+    Rml::Element *mFadeRight = nullptr;
+    int mOverflowState = -1;            // last logged (more left) | (more right) << 1
     int mFocusedTabIndex = -1;
+    int mDropTabIndex = -1; // online: "Continue without them" (docs/ONLINE_DROP_VOTE.md)
+    void refresh_drop_tab();
 };
 
 } // namespace partyboard::ui

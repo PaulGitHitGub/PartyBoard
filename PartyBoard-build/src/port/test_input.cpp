@@ -16,6 +16,7 @@
 //   S <pad 0-7> <buttons> <stickX> <stickY>   hold this state on that pad until changed
 //   R <pad 0-7>                               release that pad
 //   #phones <mask>                            pads with a phone on them, bit 0 = pad 1
+//   #note <text>                              a line for game.log ("Phone controller: <text>")
 //
 // A held pad is released if no S line refreshes it for a second (the bridge
 // repeats them while a phone is connected) or when the client disconnects.
@@ -435,6 +436,26 @@ void read_commands()
             }
             continue;
         }
+        // "W <w> <h>": resize the window to w x h (screen points), as dragging its edge would;
+        // windowed only (test runs only: menu screenshots at 4:3, widescreen and the minimum size).
+        if (std::getenv("PARTYBOARD_TEST_CAPTURE") != nullptr && line.size() > 2 && line[0] == 'W' && line[1] == ' ') {
+            int w = 0, h = 0;
+            SDL_Window *window = SDL_GetKeyboardFocus();
+            if (window == nullptr) {
+                int count = 0;
+                if (SDL_Window **windows = SDL_GetWindows(&count)) {
+                    if (count > 0) window = windows[0];
+                    SDL_free(windows);
+                }
+            }
+            if (window != nullptr && std::sscanf(line.c_str() + 2, "%d %d", &w, &h) == 2 && w > 0 && h > 0) {
+                const bool ok = SDL_SetWindowSize(window, w, h);
+                int nw = 0, nh = 0;
+                SDL_GetWindowSize(window, &nw, &nh);
+                std::fprintf(stderr, "Test input: window size %dx%d asked, %dx%d now%s\n", w, h, nw, nh, ok ? "" : " (refused)");
+            }
+            continue;
+        }
         if (std::getenv("PARTYBOARD_TEST_CAPTURE") != nullptr && line == "FK") {
             SDL_Event key {};
             key.type = SDL_EVENT_KEY_DOWN;
@@ -460,6 +481,18 @@ void read_commands()
             if (allowed) {
                 aurora_capture_next_frame(line.c_str() + 2);
             }
+            continue;
+        }
+        // "#note <text>": a line from the phone bridge for game.log (why a
+        // phone disconnected, its screen wake lock); bridge.log has the detail.
+        if (line.compare(0, 6, "#note ") == 0) {
+            std::string text = line.substr(6, 300);
+            for (char &c : text) {
+                if (static_cast<unsigned char>(c) < 0x20 || c == 0x7F) {
+                    c = ' ';
+                }
+            }
+            std::fprintf(stderr, "Phone controller: %s\n", text.c_str());
             continue;
         }
         unsigned mask = 0;

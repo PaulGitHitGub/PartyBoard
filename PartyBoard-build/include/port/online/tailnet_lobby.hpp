@@ -35,8 +35,10 @@ constexpr std::uint16_t kGamePort = 48780;
 constexpr int kMaxSeats = 8;
 constexpr int kNormalPartySeats = 4;
 // The lobby's own line protocol: 2 = ready check (LOBBYVER, READYSEAT, READYSTATE,
-// PING/PONG). Sent by the joiner before HELLO; a host turns other versions away.
-constexpr int kLobbyProtocol = 2;
+// PING/PONG); 3 = continuing a saved online party (COMPUTER <id> before HELLO,
+// the id in MEMBER; CONTINUING, PARTYSAVE, NEWPARTY; docs/ONLINE_CONTINUE.md).
+// Sent by the joiner before HELLO; a host turns other versions away.
+constexpr int kLobbyProtocol = 3;
 
 // Ready check, per seat (docs/ONLINE_MULTISEAT.md): the computer that owns the seat
 // says whether a controller is on it and whether that person pressed A.
@@ -61,6 +63,10 @@ struct HostOffer {
     int players = 0;
     int joined = 0;
     int party = 4;        // 4 = normal party, 8 = the 8-player party
+    // The host continues a saved online party (docs/ONLINE_CONTINUE.md).
+    bool continuing = false;
+    int round = 0;
+    int rounds = 0;
 };
 
 // Finds this computer's Tailscale address and the lobbies hosted in the network.
@@ -138,7 +144,34 @@ struct Member {
     // owns seats seat .. seat + seats - 1. "Mac" or "PC" ("" from an older copy).
     int seats = 1;
     std::string computer;
+    // That computer's lasting id (online-id.txt in its profile), "" when unknown.
+    std::string id;
+    // Saved party only: the others voted to continue without this computer (its people are
+    // computer players in the save).
+    bool droppedByVote = false;
 };
+
+// This computer's lasting id for the online lobby: 16 hex digits, made once and
+// kept in the profile (online-id.txt). Continuing a party matches computers by it.
+std::string computer_id();
+
+// An unfinished online party this computer hosted (docs/ONLINE_CONTINUE.md),
+// from <profile>/Online Party/party.json + party.sav.
+struct SavedParty {
+    bool valid = false;
+    std::string problem;           // why not, when !valid ("" when there is no party at all)
+    int party = 4;                 // 4 or 8
+    int players = 0;               // online seats
+    std::vector<Member> computers; // saved seat blocks (seat, seats, name, computer, id)
+    int round = 0, rounds = 0, board = 0;
+    std::string mode, savedAt, continuesAt, hash;
+    std::vector<std::string> characters;   // per online seat (0-based), "" when that seat had none
+    std::string bytes;             // the 16 KB save image
+    int thisSeat = -1;             // this computer's first seat in the saved party
+};
+SavedParty load_saved_party();
+// "Toad's Midway Madness", ... for board 0-5.
+const char *board_name(int board);
 
 class Lobby {
 public:
@@ -154,6 +187,27 @@ public:
     bool host(const std::string &selfIp, int players, const std::string &name, const Identity &identity, int party = 4,
         int people = 1);
     bool join(const std::string &hostIp, const std::string &name, const Identity &identity, int people = 1);
+    // Host a lobby that continues a saved online party: the saved party size and
+    // seats; each saved computer must come back with its saved number of people.
+    bool hostContinue(const std::string &selfIp, const std::string &name, const Identity &identity, const SavedParty &saved);
+    // Continue lobby only: give up continuing. The computers in it are told to find
+    // the new game; the caller then hosts a new party.
+    void startNewPartyInstead();
+    bool continuing() const;
+    // Continue lobby: the missing computers' people become computer players and the
+    // party continues without them (the host's choice). Needs one other computer back.
+    bool continueWithComputers();
+    std::string missingComputers() const;   // "Valentin, Ana"; "" when nobody is missing
+    bool anyComputerBack() const;
+    // Short "Waiting for" text for the panel: "Valentin's PC · this Mac: 3 controllers".
+    std::string waitingShort() const;
+    const SavedParty &saved() const;
+    // Continue lobby: the saved computer whose first seat is `seat`, or nullptr.
+    const Member *savedComputerAt(int seat) const;
+    // Guest: the host continues a saved party (round of rounds), from CONTINUING.
+    bool hostContinues() const { return mHostContinues; }
+    int continueRound() const { return mContinueRound; }
+    int continueRounds() const { return mContinueRounds; }
     void leave();
     // Host only: once every seat is filled.
     bool canStart() const;
@@ -196,6 +250,8 @@ private:
     bool mReadyDirty = false;
     int mLastReadyLogged = -1;
     std::string mLastWaitingLogged;
+    bool mHostContinues = false;
+    int mContinueRound = 0, mContinueRounds = 0;
 
     void fail(std::string message);
     void launch();

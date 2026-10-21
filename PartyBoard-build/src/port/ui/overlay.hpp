@@ -23,13 +23,23 @@ protected:
     Rml::Element *mPing = nullptr;
     Rml::Element *mPaused = nullptr;
     Rml::Element *mCountdown = nullptr;
+    // Online drop vote (docs/ONLINE_DROP_VOTE.md).
+    Rml::Element *mDropWait = nullptr;
+    Rml::Element *mCtrlDrop = nullptr;
+    bool mDropWaitShown = false;
+    std::string mDropWaitText;
+    std::string mDropWaitLogged;
+    std::string mCtrlDropText;
+    void update_drop_banners();
     int mCountdownShown = 0;
     bool mPauseHintShown = false;
     bool mPingHiddenForMinigame = false;
     Rml::Element *mMenuHint = nullptr;
     bool mMenuHintShown = false;
+    bool mMenuBarOpen = false; // top-anchored boxes moved below the menu bar's tab band
     unsigned mPausedSeats = 0;
     Uint64 mPingLastUpdate = 0;
+    std::string mPingLayout; // which computers (seat ranges) the ping box lists, for its log line
     Rml::Element *mCurrentToast = nullptr;
     Rml::Element *mControllerWarning = nullptr;
     Rml::Element *mMenuNotification = nullptr;

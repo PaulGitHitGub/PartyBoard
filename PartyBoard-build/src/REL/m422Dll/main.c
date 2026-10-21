@@ -17,6 +17,9 @@
 #include "ext_math.h"
 #include "version.h"
 #include <string.h>
+#if defined(PARTYBOARD_HD_BETA)
+#include <stdlib.h>
+#endif
 
 #ifndef __MWERKS__
 s32 rand8(void);
@@ -120,7 +123,12 @@ s32 lbl_1_data_A0[] = { DATA_MAKE_NUM(DATADIR_MARIOMOT, 0), DATA_MAKE_NUM(DATADI
     DATA_MAKE_NUM(DATADIR_MARIOMOT, 24) };
 
 u32 lbl_1_data_C0[] = { 0, 0, 0, 1, 1, 0, 0, 0 };
-u8 lbl_1_data_E0[] = { 0, 0, 0, 1, 0, 1, 1 };
+/* The loss motion uses slot 7 too. On GameCube the former seven-byte
+ * table was followed by E7[0] == 8, accidentally making that read nonzero.
+ * Specify the non-looping flag instead of depending on host data layout. */
+u8 lbl_1_data_E0[] = { 0, 0, 0, 1, 0, 1, 1, 1 };
+typedef char m422_motion_flags_cover_all_motions[
+    (ARRAY_COUNT(lbl_1_data_E0) == ARRAY_COUNT(lbl_1_data_A0)) ? 1 : -1];
 u8 lbl_1_data_E7[] = { 8, 8, 8, 0, 12, 0, 8, 8, 0 };
 StructDataF0 lbl_1_data_F0[12][10] = { 0 };
 
@@ -585,6 +593,12 @@ void fn_1_2FC(omObjData *arg0)
     if (phi_r25 >= 0 && phi_r25 != temp_r31->unk18) {
         Hu3DMotionShiftSet(arg0->model[0], arg0->motion[phi_r25], 0.0f, lbl_1_data_E7[phi_r25],
             (lbl_1_data_E0[phi_r25] != 0) ? HU3D_MOTATTR_NONE : HU3D_MOTATTR_LOOP);
+#ifdef TARGET_PC
+        if (phi_r25 == 6 || phi_r25 == 7) {
+            OSReport("[m422] result motion: model %d, index %d, loop %d\n",
+                arg0->model[0], phi_r25, !lbl_1_data_E0[phi_r25]);
+        }
+#endif
         temp_r31->unk18 = phi_r25;
     }
 }
@@ -1368,6 +1382,12 @@ void fn_1_89E0(omObjData *arg0)
                     || (lbl_1_bss_8 >= REFRESH_RATE_F * 6))) {
                     lbl_1_bss_34++;
                     lbl_1_bss_8 = 0.0f;
+#if defined(PARTYBOARD_HD_BETA)
+                    if (getenv("PARTYBOARD_TEST_M422_ZERO_RESULT")) {
+                        lbl_1_data_18F4[0] = lbl_1_data_18F4[1] = 0;
+                        OSReport("[m422] test aid: zero-coin result selected for both teams\n");
+                    }
+#endif
                     GWPlayerCoinCollectSet(spC[0]->unk04, lbl_1_data_18F4[0]);
                     GWPlayerCoinCollectSet(spC[1]->unk04, lbl_1_data_18F4[1]);
                     GWPlayerCoinCollectSet(spC[2]->unk04, lbl_1_data_18F4[1]);

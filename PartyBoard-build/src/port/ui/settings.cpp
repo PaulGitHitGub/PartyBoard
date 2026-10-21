@@ -7,6 +7,12 @@
 #include "controller_config.hpp"
 #include "player_setup.hpp"
 #include "port/app_update.hpp"
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+#if (defined(__APPLE__) && !TARGET_OS_IPHONE) || defined(_WIN32)
+#include "port/send_logs.h"
+#endif
 #include "port/config.hpp"
 #include "port/display_rate.hpp"
 #include "port/window_mode.hpp"
@@ -19,7 +25,6 @@
 #include "number_button.hpp"
 #include "pane.hpp"
 #include "phone_controller.hpp"
-#include "port/retroachievements.h"
 #include "string_button.hpp"
 #include "prelaunch.hpp"
 #include "ui.hpp"
@@ -31,14 +36,6 @@
 #include <game/disp.h>
 #include <gx/GXAurora.h>
 #include <vi.h>
-
-namespace {
-// The RetroAchievements login fields. Typed in the settings and handed to
-// rcheevos on "Log In"; the password is never saved and is cleared as soon
-// as it has been sent.
-Rml::String s_raPendingUser;
-Rml::String s_raPendingPassword;
-} // namespace
 
 extern "C" int PartyBoard_TargetFrameRateFor(bool netplayEnabled, int configured);
 
@@ -609,7 +606,7 @@ SettingsWindow::SettingsWindow(bool prelaunch)
                 .helpText = kInternalResolutionHelpText,
                 .valueMin = 0,
                 .valueMax = 12,
-                .defaultValue = 0,
+                .defaultValue = 1,
             },
             mPrelaunch);
         graphics_tuner_control(*this, leftPane, rightPane, getSettings().game.shadowResolutionMultiplier,
@@ -829,54 +826,6 @@ SettingsWindow::SettingsWindow(bool prelaunch)
         // leftPane.add_section("Abilities");
     });
 
-    add_tab("RetroAchievements", [this](Rml::Element *content) {
-        auto &leftPane = add_child<Pane>(content, Pane::Type::Controlled);
-        auto &rightPane = add_child<Pane>(content, Pane::Type::Uncontrolled);
-
-        if (s_raPendingUser.empty()) {
-            s_raPendingUser = getSettings().retroAchievements.username.getValue();
-        }
-
-        leftPane.add_section("Account");
-        leftPane.register_control(leftPane.add_select_button({
-                                      .key = "Status",
-                                      .getValue = [] { return Rml::String { ra::statusText() }; },
-                                  }),
-            rightPane, [](Pane &pane) {
-                pane.add_text("Softcore mode. Online games don't count.");
-            });
-        config_bool_select(leftPane, rightPane, getSettings().retroAchievements.enabled,
-            {
-                .key = "Enable RetroAchievements",
-                .helpText = "Unlock achievements from retroachievements.org. Takes effect after a restart.",
-            });
-        leftPane.register_control(leftPane.add_child<StringButton>(StringButton::Props {
-                                      .key = "Username",
-                                      .getValue = [] { return s_raPendingUser; },
-                                      .setValue = [](Rml::String value) { s_raPendingUser = std::move(value); },
-                                      .maxLength = 64,
-                                  }),
-            rightPane, [](Pane &pane) { pane.add_text("Your retroachievements.org username."); });
-        leftPane.register_control(leftPane.add_child<StringButton>(StringButton::Props {
-                                      .key = "Password",
-                                      .getValue = [] { return s_raPendingPassword; },
-                                      .setValue = [](Rml::String value) { s_raPendingPassword = std::move(value); },
-                                      .maxLength = 256,
-                                      .type = "password",
-                                      .secret = true,
-                                  }),
-            rightPane, [](Pane &pane) {
-                pane.add_text("Used once to log in, never saved.");
-            });
-        leftPane.register_control(leftPane.add_button("Log In").on_pressed([] {
-            ra::loginWithPassword(s_raPendingUser, s_raPendingPassword);
-            s_raPendingPassword.clear();
-        }),
-            rightPane, [](Pane &pane) { pane.add_text("Log in with the username and password above."); });
-        leftPane.register_control(leftPane.add_button("Log Out").on_pressed([] { ra::logout(); }),
-            rightPane, [](Pane &pane) { pane.add_text("Forget the saved session on this computer."); });
-    });
-
     add_tab("Interface", [this](Rml::Element *content) {
         auto &leftPane = add_child<Pane>(content, Pane::Type::Controlled);
         auto &rightPane = add_child<Pane>(content, Pane::Type::Uncontrolled);
@@ -886,7 +835,11 @@ SettingsWindow::SettingsWindow(bool prelaunch)
             config_bool_select(leftPane, rightPane, getSettings().backend.checkForUpdates,
                 {
                     .key = "Check for Updates",
+#ifdef __ANDROID__
                     .helpText = "Check GitHub for a newer build at startup. Nothing downloads without asking.",
+#else
+                    .helpText = "Look for a newer PartyBoard at startup. Nothing is downloaded.",
+#endif
                 });
             leftPane.register_control(leftPane.add_button("Check Now").on_pressed([] { update::check(false); }), rightPane,
                 [](Pane &pane) { pane.add_text("The answer shows on the home screen, under the version."); });
@@ -900,64 +853,25 @@ SettingsWindow::SettingsWindow(bool prelaunch)
                 pane.add_text("Settings, saves, logs and texture packs.");
             });
 #endif
-        leftPane.register_control(leftPane.add_select_button({
-                                      .key = "Notifications",
-                                      .getValue =
-                                          [] {
-                                              const bool ach = getSettings().game.enableAchievementToasts.getValue();
-                                              const bool ctl = getSettings().game.enableControllerToasts.getValue();
-                                              if (!ach && !ctl) {
-                                                  return Rml::String { "Off" };
-                                              }
-                                              if (ach && ctl) {
-                                                  return Rml::String { "All" };
-                                              }
-                                              return Rml::String { "Some" };
-                                          },
-                                      .isModified =
-                                          [] {
-                                              const auto &ach = getSettings().game.enableAchievementToasts;
-                                              const auto &ctl = getSettings().game.enableControllerToasts;
-                                              return ach.getValue() != ach.getDefaultValue() || ctl.getValue() != ctl.getDefaultValue();
-                                          },
-                                  }),
-            rightPane, [](Pane &pane) {
-                pane.clear();
-                pane.add_button("Select All").on_pressed([] {
-                    // mDoAud_seStartMenu(kSoundItemChange); // TODO PC
-                    getSettings().game.enableAchievementToasts.setValue(true);
-                    getSettings().game.enableControllerToasts.setValue(true);
-                    config::Save();
-                });
-                pane.add_button("Select None").on_pressed([] {
-                    // mDoAud_seStartMenu(kSoundItemChange); // TODO PC
-                    getSettings().game.enableAchievementToasts.setValue(false);
-                    getSettings().game.enableControllerToasts.setValue(false);
-                    config::Save();
-                });
-
-                pane.add_section("Types");
-                pane.add_button({
-                                    .text = "Achievements",
-                                    .isSelected = [] { return getSettings().game.enableAchievementToasts.getValue(); },
-                                })
-                    .on_pressed([] {
-                        // mDoAud_seStartMenu(kSoundItemChange); // TODO PC
-                        auto &v = getSettings().game.enableAchievementToasts;
-                        v.setValue(!v.getValue());
-                        config::Save();
-                    });
-                pane.add_button({
-                                    .text = "Controller",
-                                    .isSelected = [] { return getSettings().game.enableControllerToasts.getValue(); },
-                                })
-                    .on_pressed([] {
-                        // mDoAud_seStartMenu(kSoundItemChange); // TODO PC
-                        auto &v = getSettings().game.enableControllerToasts;
-                        v.setValue(!v.getValue());
-                        config::Save();
-                    });
-                pane.add_rml("Which pop-up notifications to show.");
+#if (defined(__APPLE__) && !TARGET_OS_IPHONE) || defined(_WIN32)
+        leftPane.register_control(leftPane.add_button("Send Logs").on_pressed([] {
+            PartyBoard_SendLogs();
+            push_toast({
+                .type = "info",
+                .title = "Send Logs",
+#if defined(_WIN32)
+                .content = "Your logs are being saved to Downloads. File Explorer opens next with the zip selected.",
+#else
+                .content = "Your logs are being saved to Downloads. A Share window opens next: pick who to send them to.",
+#endif
+                .duration = std::chrono::seconds(6),
+            });
+        }), rightPane, [](Pane &pane) { pane.add_text("Save recent logs to share when reporting a problem."); });
+#endif
+        config_bool_select(leftPane, rightPane, getSettings().game.enableControllerToasts,
+            {
+                .key = "Controller Notifications",
+                .helpText = "Show controller connection notifications.",
             });
         config_bool_select(leftPane, rightPane, getSettings().backend.skipPreLaunchUI,
             {

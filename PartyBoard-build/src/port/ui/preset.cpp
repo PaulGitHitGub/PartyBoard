@@ -18,7 +18,6 @@ namespace {
         auto &s = getSettings();
         s.video.lockAspectRatio.setValue(true);
         s.video.enableAdaptiveWidescreen.setValue(false);
-        s.game.enableAchievementToasts.setValue(false);
         s.game.enableControllerToasts.setValue(false);
         s.game.internalResolutionScale.setValue(1);
         s.game.shadowResolutionMultiplier.setValue(1);
@@ -28,11 +27,10 @@ namespace {
     void applyPresetPartyBoard()
     {
         auto &s = getSettings();
-        s.game.enableAchievementToasts.setValue(true);
         s.game.enableControllerToasts.setValue(true);
         s.game.enableQuickTransform.setValue(true);
-        s.game.internalResolutionScale.setValue(0);
-        s.game.shadowResolutionMultiplier.setValue(4);
+        s.game.internalResolutionScale.setValue(1);
+        s.game.shadowResolutionMultiplier.setValue(1);
     }
 
 } // namespace

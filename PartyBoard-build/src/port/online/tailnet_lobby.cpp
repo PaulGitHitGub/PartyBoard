@@ -21,6 +21,7 @@
 #include "port/main.h"
 #include "port/netplay_state.hpp"
 #include "port/netplay_transport.hpp"
+#include "port/online_party.h"
 #if defined(PARTYBOARD_CROSSPLAY_IDENTITY)
 // Generated at build time by cmake/sim_fingerprint.cmake (cross-play builds only).
 #include "partyboard_sim_fingerprint.h"
@@ -39,6 +40,7 @@
 #include <cwchar>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <sstream>
 #include <thread>
 
@@ -656,6 +658,12 @@ bool valid_ipv4(const std::string &ip)
 
 bool valid_port(long port) { return port > 1024 && port < 65536; }
 
+// A computer id (protocol 3): 16 lower-case hex digits.
+bool valid_computer_id(const std::string &id)
+{
+    return id.size() == 16 && std::all_of(id.begin(), id.end(), [](unsigned char c) { return std::isdigit(c) || (c >= 'a' && c <= 'f'); });
+}
+
 // "WORD rest of the line" -> {"WORD", "rest of the line"}
 std::pair<std::string, std::string> split_first(const std::string &line)
 {
@@ -873,6 +881,143 @@ std::uint16_t local_game_port()
     return kGamePort;
 }
 
+// ---- This computer's lasting id -------------------------------------------
+
+std::string computer_id()
+{
+    static std::string cached;
+    static fs::path cachedFor;
+    if (!cached.empty() && cachedFor == PartyBoard_ConfigPath) {
+        return cached;
+    }
+    const fs::path file = PartyBoard_ConfigPath / "online-id.txt";
+    std::string id;
+    if (std::ifstream in(file); in) {
+        std::getline(in, id);
+        // Tolerate a hand-edited file: spaces, a Windows line end, capitals.
+        id.erase(std::remove_if(id.begin(), id.end(), [](unsigned char c) { return std::isspace(c) != 0; }), id.end());
+        std::transform(id.begin(), id.end(), id.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    }
+    if (!valid_computer_id(id)) {
+        std::random_device random;
+        char text[17];
+        std::snprintf(text, sizeof(text), "%08x%08x", static_cast<unsigned>(random()), static_cast<unsigned>(random()));
+        id = text;
+        std::error_code ec;
+        fs::create_directories(PartyBoard_ConfigPath, ec);
+        std::ofstream out(file, std::ios::trunc);
+        out << id << "\n";
+        lobby_log("this %s's lasting online id is new: %s (%s)", kComputer, id.c_str(), out ? utf8_text(file).c_str() : "couldn't be saved");
+    }
+    cached = id;
+    cachedFor = PartyBoard_ConfigPath;
+    return cached;
+}
+
+// ---- A saved online party (docs/ONLINE_CONTINUE.md) -----------------------
+
+const char *board_name(int board)
+{
+    static const char *names[6] = {"Toad's Midway Madness", "Goomba's Greedy Gala", "Boo's Haunted Bash", "Koopa's Seaside Soiree",
+        "Shy Guy's Jungle Jam", "Bowser's Gnarly Party"};
+    return board >= 0 && board < 6 ? names[board] : "a board";
+}
+
+SavedParty load_saved_party()
+{
+    SavedParty p;
+    const fs::path dir = PartyBoard_ConfigPath / "Online Party";
+    std::ifstream in(dir / "party.json");
+    if (!in) {
+        lobby_log("continue: nothing to continue: no online party saved on this %s (%s)", kComputer, utf8_text(dir).c_str());
+        return p;
+    }
+    const auto info = nlohmann::json::parse(in, nullptr, false);
+    const auto problem = [&](const std::string &why) {
+        p.problem = why;
+        lobby_log("continue: nothing to continue: %s (%s)", why.c_str(), utf8_text(dir / "party.json").c_str());
+        return p;
+    };
+    if (info.is_discarded() || !info.is_object()) {
+        return problem("the online party's description is damaged");
+    }
+    try {
+        if (info.value("version", 0) != 1) {
+            return problem("the online party was saved by another version");
+        }
+        p.party = info.value("party", 4) == 8 ? 8 : 4;
+        p.players = info.value("players", 0);
+        p.round = info.value("round", 0);
+        p.rounds = info.value("rounds", 0);
+        p.board = info.value("board", 0);
+        p.mode = info.value("mode", std::string());
+        p.savedAt = info.value("savedAt", std::string());
+        p.continuesAt = info.value("continuesAt", std::string());
+        p.hash = info.value("saveHash", std::string());
+        if (info.value("finished", false)) {
+            return problem("the last online party (" + p.savedAt + ") was played to the end");
+        }
+        // Any computer of the party may host the continue (user's choice, 2026-10-19).
+        p.thisSeat = info.value("thisSeat", -1);
+        if (p.players < 2 || p.players > (p.party == 8 ? kMaxSeats : kNormalPartySeats)) {
+            return problem("the online party's seats are invalid");
+        }
+        std::vector<bool> covered(static_cast<std::size_t>(p.players), false);
+        for (const auto &c : info.value("computers", nlohmann::json::array())) {
+            Member m;
+            m.seat = c.value("seat", -1);
+            m.seats = c.value("seats", 0);
+            m.name = c.value("name", std::string());
+            m.computer = c.value("computer", std::string());
+            m.id = c.value("id", std::string());
+            m.droppedByVote = c.value("droppedByVote", false);
+            if (m.seat < 0 || m.seats < 1 || m.seat + m.seats > p.players) {
+                return problem("the online party's roster is invalid");
+            }
+            for (int s = m.seat; s < m.seat + m.seats; ++s) {
+                if (covered[static_cast<std::size_t>(s)]) {
+                    return problem("the online party's roster is invalid");
+                }
+                covered[static_cast<std::size_t>(s)] = true;
+            }
+            p.computers.push_back(m);
+        }
+        std::sort(p.computers.begin(), p.computers.end(), [](const Member &a, const Member &b) { return a.seat < b.seat; });
+        if (p.computers.size() < 2 || p.computers.front().seat != 0
+            || std::find(covered.begin(), covered.end(), false) != covered.end()) {
+            return problem("the online party's roster is incomplete");
+        }
+        p.characters.assign(static_cast<std::size_t>(p.players), std::string());
+        for (const auto &c : info.value("characters", nlohmann::json::array())) {
+            const int seat = c.value("onlineSeat", 0) - 1;
+            if (seat >= 0 && seat < p.players && c.value("person", false)) {
+                p.characters[static_cast<std::size_t>(seat)] = c.value("character", std::string());
+            }
+        }
+    } catch (const std::exception &) {
+        return problem("the online party's description is damaged");
+    }
+    std::ifstream save(dir / "party.sav", std::ios::binary);
+    p.bytes.assign(std::istreambuf_iterator<char>(save), std::istreambuf_iterator<char>());
+    if (p.bytes.size() != party::kSaveBytes) {
+        return problem("the online party save is missing or the wrong size (" + std::to_string(p.bytes.size()) + " bytes)");
+    }
+    if (party::hash_hex(party::save_hash(p.bytes.data(), p.bytes.size())) != p.hash) {
+        return problem("the online party save doesn't match its description (hash)");
+    }
+    p.valid = true;
+    std::string roster;
+    for (const auto &c : p.computers) {
+        roster += " " + (c.seats > 1 ? std::to_string(c.seat + 1) + "-" + std::to_string(c.seat + c.seats) : std::to_string(c.seat + 1)) + "="
+            + c.name + "/" + (c.computer.empty() ? "?" : c.computer) + "/" + (c.id.empty() ? "no-id" : c.id);
+    }
+    lobby_log("continue: unfinished online party offered: %d-player party (%s), %d seats, board %d, round %d of %d, saved %s, hash %s; "
+              "computers:%s; %s",
+        p.party, p.mode.c_str(), p.players, p.board + 1, p.round, p.rounds, p.savedAt.c_str(), p.hash.c_str(), roster.c_str(),
+        p.continuesAt.c_str());
+    return p;
+}
+
 // ---- Scanner ------------------------------------------------------------
 
 Scanner::~Scanner()
@@ -948,6 +1093,9 @@ void Scanner::start()
                 // A newer host says the party size on a second line; an older one closes.
                 const auto [partyWord, partyRest] = word == "HOSTING" ? split_first(read_line(fd, 300))
                                                                       : std::pair<std::string, std::string> {};
+                // Continuing a saved party (protocol 3): a third line; others close here.
+                const auto [continueWord, continueRest] = partyWord == "PARTY" ? split_first(read_line(fd, 300))
+                                                                               : std::pair<std::string, std::string> {};
                 close_socket(fd);
                 if (word != "HOSTING") {
                     lobby_log("scan: %s (%s): lobby port open but no game offered", device.c_str(), ip.c_str());
@@ -960,8 +1108,13 @@ void Scanner::start()
                 fields >> offer.players >> offer.joined;
                 std::getline(fields >> std::ws, offer.name);
                 offer.party = partyWord == "PARTY" && std::atoi(partyRest.c_str()) == 8 ? 8 : 4;
-                lobby_log("scan: %s (%s): %s hosts a game, %d of %d players, %d-player party", device.c_str(), ip.c_str(),
-                    offer.name.c_str(), offer.joined, offer.players, offer.party);
+                if (continueWord == "CONTINUING") {
+                    std::istringstream more(continueRest);
+                    offer.continuing = static_cast<bool>(more >> offer.round >> offer.rounds);
+                }
+                lobby_log("scan: %s (%s): %s hosts a game, %d of %d players, %d-player party%s", device.c_str(), ip.c_str(),
+                    offer.name.c_str(), offer.joined, offer.players, offer.party,
+                    offer.continuing ? (", continuing a saved party (round " + std::to_string(offer.round) + " of " + std::to_string(offer.rounds) + ")").c_str() : "");
                 if (offer.players >= 2) {
                     offers.push_back(offer);
                 }
@@ -1156,6 +1309,7 @@ std::string simulation_fingerprint()
 //   guest -> host   WHO                       (lobby browser; host answers and closes)
 //                   LOBBYVER <n>              (before HELLO: lobby protocol, kLobbyProtocol)
 //                   PEOPLE <n> <Mac|PC>       (before HELLO: people on this computer)
+//                   COMPUTER <id>             (before HELLO, protocol 3: this computer's lasting id, 16 hex digits)
 //                   READYSEAT <k> <controller 0|1> <ready 0|1> <device>   (this computer's k-th person)
 //                   PING / PONG               (both ways, every 2 s: the ready check's ping)
 //                   HELLO <build> <disc> <gamePort> <name>
@@ -1164,12 +1318,16 @@ std::string simulation_fingerprint()
 //                   PARTY <4|8>               (after HOSTING; older scanners read one line)
 //                   WELCOME <seat> <players> [<party> [<seats>]]
 //                   REJECT <reason>
-//                   ROSTER <players> [<party>] / MEMBER <seat> <ip> <gamePort> <seats> <Mac|PC> <name> / END
+//                   ROSTER <players> [<party>] / MEMBER <seat> <ip> <gamePort> <seats> <Mac|PC> <id|-> <name> / END
 //                   (several people on one computer: a member owns seats seat..seat+seats-1)
 //                   READYSTATE <seat> <controller 0|1> <ready 0|1> <device>   (every taken seat, on change)
 //                   SETTINGS <json>           (the host's game-affecting settings)
 //                   CARD <filename> <bytes>\n<bytes>    (the host's memory card)
 //                   GO
+//   continuing a saved online party (protocol 3, docs/ONLINE_CONTINUE.md):
+//   host -> guest   CONTINUING <round> <rounds> <board> <mode>   (after WELCOME; also after PARTY in the WHO answer)
+//                   PARTYSAVE <bytes> <hash>\n<bytes>   (at Start, before CARD: the host's party save)
+//                   NEWPARTY                  (the host gives up continuing and hosts a new party)
 
 // Several people on one computer: the first seat of the first run of `people`
 // free consecutive seats, or -1.
@@ -1190,6 +1348,106 @@ std::string fmt_people_left(int left, int people, const std::string &computer)
         + (computer.empty() ? std::string("computer") : computer) + " asked for " + std::to_string(people) + ".";
 }
 
+// The CONTINUING line: what the saved party is, for joiners and the game list.
+std::string continuing_line(const SavedParty &saved)
+{
+    return "CONTINUING " + std::to_string(saved.round) + " " + std::to_string(saved.rounds) + " " + std::to_string(saved.board) + " "
+        + (saved.mode.empty() ? std::string("-") : saved.mode) + "\n";
+}
+
+bool same_name(const std::string &a, const std::string &b)
+{
+    return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](unsigned char x, unsigned char y) {
+        return std::tolower(x) == std::tolower(y);
+    });
+}
+
+// Continuing (docs/ONLINE_CONTINUE.md): one saved computer, where it sits now. The
+// computer hosting the continue is first (new seats from 0), the others follow in
+// their saved order; computer players for a missing computer come last.
+struct ContinueSlot {
+    Member saved;          // its saved seats (saved.seat, saved.seats), name, Mac/PC, id
+    int newSeat = 0;       // its first seat in this session
+    bool own = false;      // the computer hosting the continue
+    bool matched = false;  // back in the lobby
+    bool com = false;      // missing: its people continue as computer players
+};
+
+// The saved computer (not the host's, not back yet, not given to computer players) a
+// joiner is: by its lasting id first; failing that by nickname (ignoring case) and Mac/PC.
+ContinueSlot *match_saved_computer(std::vector<ContinueSlot> &layout, const std::string &id, const std::string &name,
+    const std::string &computer, std::string &how)
+{
+    const auto open = [](const ContinueSlot &c) { return !c.own && !c.matched && !c.com; };
+    if (!id.empty()) {
+        for (auto &c : layout) {
+            if (open(c) && c.saved.id == id) {
+                how = "by computer id";
+                return &c;
+            }
+        }
+    }
+    for (auto &c : layout) {
+        if (open(c) && same_name(c.saved.name, name)
+            && (c.saved.computer.empty() || computer.empty() || c.saved.computer == computer)) {
+            how = "by nickname and computer type";
+            return &c;
+        }
+    }
+    return nullptr;
+}
+
+// New seats: the host's block from 0, then every computer that is coming (matched or
+// still awaited) in saved order, then the computer players. Returns the seat count of
+// the people (= the online session's players).
+int place_layout(std::vector<ContinueSlot> &layout)
+{
+    int next = 0;
+    for (auto &c : layout) {
+        if (c.own) {
+            c.newSeat = next;
+            next += c.saved.seats;
+        }
+    }
+    for (auto &c : layout) {
+        if (!c.own && !c.com) {
+            c.newSeat = next;
+            next += c.saved.seats;
+        }
+    }
+    const int people = next;
+    for (auto &c : layout) {
+        if (c.com) {
+            c.newSeat = next;
+            next += c.saved.seats;
+        }
+    }
+    return people;
+}
+
+// --netplay-continue-map: the new seat of each saved seat, '*' = computer player; "" when
+// every seat stays where it was.
+std::string layout_map(const std::vector<ContinueSlot> &layout, int savedPlayers)
+{
+    std::string map;
+    bool same = true;
+    for (int s = 0; s < savedPlayers; ++s) {
+        for (const auto &c : layout) {
+            if (s >= c.saved.seat && s < c.saved.seat + c.saved.seats) {
+                const int now = c.newSeat + (s - c.saved.seat);
+                same = same && now == s && !c.com;
+                map += (map.empty() ? "" : ",") + std::to_string(now) + (c.com ? "*" : "");
+            }
+        }
+    }
+    return same ? std::string() : map;
+}
+
+std::string seats_label(int first, int count)
+{
+    return count > 1 ? "players " + std::to_string(first + 1) + "-" + std::to_string(first + count) : "player " + std::to_string(first + 1);
+}
+
 struct Lobby::Impl {
     struct Conn {
         Socket fd = kNoSocket;
@@ -1202,6 +1460,7 @@ struct Lobby::Impl {
         int people = 1;            // PEOPLE: how many play on that computer
         std::string computer;      // PEOPLE: "Mac" or "PC"
         int lobbyVersion = 1;      // LOBBYVER (none = 1, before the ready check)
+        std::string id;            // COMPUTER: that computer's lasting id
         // Ready check: one PING outstanding at a time, every 2 s; round trip in ms.
         int rttMs = -1;
         bool pingOut = false;
@@ -1251,6 +1510,17 @@ struct Lobby::Impl {
     std::vector<char> card;
     bool goReceived = false;
     Clock::time_point startedAt {};
+
+    // Continuing a saved online party (docs/ONLINE_CONTINUE.md). Host: the saved
+    // party and its save; guest: the party save as it arrives.
+    bool continuing = false;
+    SavedParty saved;
+    std::vector<ContinueSlot> layout;
+    std::string continueMap;   // host: at Start; guest: from CONTINUEMAP
+    std::string partySave;
+    std::string partySaveHash;
+    std::size_t partySaveRemaining = 0;
+    bool receivingPartySave = false;
 
     ~Impl() { closeAll(); }
 
@@ -1370,7 +1640,19 @@ std::string Lobby::waitingFor() const
                 + (r.controller ? " (not ready)" : " (no controller)");
         }
     }
-    if (taken() < mPlayers) {
+    if (taken() < mPlayers && mIsHost && mImpl->continuing) {
+        // Continuing: the saved computers that are not back yet, by name.
+        for (const auto &c : mImpl->layout) {
+            if (!c.own && !c.matched && !c.com) {
+                if (!text.empty()) {
+                    text += ", ";
+                }
+                text += (c.saved.name.empty() ? std::string("a player") : c.saved.name)
+                    + (c.saved.computer.empty() ? std::string() : ", " + c.saved.computer) + " (" + seats_label(c.newSeat, c.saved.seats)
+                    + ") to join";
+            }
+        }
+    } else if (taken() < mPlayers) {
         if (!text.empty()) {
             text += ", ";
         }
@@ -1471,7 +1753,7 @@ bool Lobby::host(const std::string &selfIp, int players, const std::string &name
     mPlayers = std::clamp(players, 2, mParty == 8 ? kMaxSeats : kNormalPartySeats);
     // At least one seat is left for another computer.
     impl.people = std::clamp(people, 1, mPlayers - 1);
-    mMembers = {Member {0, impl.name, selfIp, impl.gamePort, impl.people, kComputer}};
+    mMembers = {Member {0, impl.name, selfIp, impl.gamePort, impl.people, kComputer, computer_id()}};
     mReady = {};
     mReadyDirty = true;
     mLastReadyLogged = -1;
@@ -1511,6 +1793,7 @@ bool Lobby::join(const std::string &hostIp, const std::string &name, const Ident
     mLastWaitingLogged.clear();
     impl.hostLink.out = "LOBBYVER " + std::to_string(kLobbyProtocol) + "\n";
     impl.hostLink.out += "PEOPLE " + std::to_string(impl.people) + " " + kComputer + "\n";
+    impl.hostLink.out += "COMPUTER " + computer_id() + "\n";
     impl.hostLink.out += "HELLO " + hello_build_field(impl.build, impl.simulation) + " " + impl.disc + " " + std::to_string(impl.gamePort) + " " + impl.name + "\n";
     Impl::flush(impl.hostLink);
     mIsHost = false;
@@ -1521,6 +1804,245 @@ bool Lobby::join(const std::string &hostIp, const std::string &name, const Ident
         static_cast<unsigned>(impl.gamePort), short_hash(impl.build).c_str(), short_hash(impl.disc).c_str(),
         impl.simulation.empty() ? "no" : short_hash(impl.simulation).c_str());
     return true;
+}
+
+bool Lobby::hostContinue(const std::string &selfIp, const std::string &name, const Identity &identity, const SavedParty &saved)
+{
+    if (!saved.valid || saved.computers.empty()) {
+        fail("There is no saved online party to continue.");
+        return false;
+    }
+    // Any computer of the party may host the continue (every copy has the same save):
+    // this one, found by its lasting id, else by the seats it had (party.json).
+    std::vector<ContinueSlot> layout;
+    const std::string myId = computer_id();
+    for (const auto &c : saved.computers) {
+        layout.push_back(ContinueSlot {c});
+    }
+    auto own = std::find_if(layout.begin(), layout.end(), [&](const ContinueSlot &c) { return !myId.empty() && c.saved.id == myId; });
+    const char *how = "by computer id";
+    if (own == layout.end()) {
+        own = std::find_if(layout.begin(), layout.end(), [&](const ContinueSlot &c) { return c.saved.seat == saved.thisSeat; });
+        how = "by the seats this computer had";
+    }
+    if (own == layout.end()) {
+        fail("This computer wasn't in the saved party.");
+        return false;
+    }
+    own->own = true;
+    // A computer the drop vote replaced is a missing computer from the start: its people are
+    // computer players in the save, so its seats go to computer players (Hard, as after the
+    // vote) and the lobby does not wait for it.
+    for (auto &c : layout) {
+        if (!c.own && c.saved.droppedByVote) {
+            c.com = true;
+            lobby_log("continue: saved %s (%s, %s) %s replaced by computer players in a drop vote; %s as computer players (Hard) and the lobby does not wait for that computer",
+                seats_label(c.saved.seat, c.saved.seats).c_str(), c.saved.name.c_str(), c.saved.computer.empty() ? "?" : c.saved.computer.c_str(),
+                c.saved.seats > 1 ? "were" : "was", c.saved.seats > 1 ? "they continue" : "it continues");
+        }
+    }
+    if (std::none_of(layout.begin(), layout.end(), [](const ContinueSlot &c) { return !c.own && !c.com; })) {
+        lobby_log("continue: refused: every other computer of the saved party was replaced by computer players in a drop vote");
+        fail("The other computers of this party were replaced by computer players, so it can't continue online. Start a new party instead.");
+        return false;
+    }
+    const int people = place_layout(layout);
+    if (!host(selfIp, people, name, identity, saved.party, own->saved.seats)) {
+        return false;
+    }
+    auto &impl = *mImpl;
+    impl.continuing = true;
+    impl.saved = saved;
+    impl.layout = layout;
+    mMessage = "Waiting for the same computers to join.";
+    lobby_log("continue: hosting the saved party %s: %d-player party (%s), %d seats, board %d, round %d of %d; %s", saved.hash.c_str(),
+        saved.party, saved.mode.c_str(), saved.players, saved.board + 1, saved.round, saved.rounds, saved.continuesAt.c_str());
+    lobby_log("continue: this %s had %s of the saved party (found %s)%s", kComputer, seats_label(own->saved.seat, own->saved.seats).c_str(), how,
+        own->saved.seat == 0 ? "" : "; it hosts now, so the seats are renumbered (host first) and every copy moves the players' controller ports with them");
+    for (const auto &c : impl.layout) {
+        lobby_log("continue: saved %s: %s, %s -> %s now%s", seats_label(c.saved.seat, c.saved.seats).c_str(), c.saved.name.c_str(),
+            c.saved.computer.empty() ? "?" : c.saved.computer.c_str(), seats_label(c.newSeat, c.saved.seats).c_str(),
+            c.own ? " (this computer, the host)" : c.com ? " (computer players: drop vote)" : " (waiting for it)");
+    }
+    return true;
+}
+
+bool Lobby::continueWithComputers()
+{
+    auto &impl = *mImpl;
+    if (!continuing() || mState != State::Waiting) {
+        return false;
+    }
+    const bool anyBack = std::any_of(impl.layout.begin(), impl.layout.end(), [](const ContinueSlot &c) { return !c.own && c.matched; });
+    std::string names;
+    for (auto &c : impl.layout) {
+        if (!c.own && !c.matched && !c.com) {
+            names += (names.empty() ? "" : ", ") + c.saved.name;
+        }
+    }
+    if (names.empty() || !anyBack) {
+        lobby_log("continue: computer players refused: %s", names.empty() ? "nobody is missing" : "no other computer is back yet (an online game needs one)");
+        return false;
+    }
+    // Old seat -> new seat for the computers in the lobby (their ready state moves with them).
+    std::vector<std::pair<int, int>> moves;
+    for (auto &c : impl.layout) {
+        if (!c.own && !c.matched && !c.com) {
+            c.com = true;
+        }
+    }
+    std::vector<int> before;
+    for (const auto &c : impl.layout) {
+        before.push_back(c.newSeat);
+    }
+    const int people = place_layout(impl.layout);
+    std::array<SeatReady, kMaxSeats> ready {};
+    for (std::size_t i = 0; i < impl.layout.size(); ++i) {
+        const auto &c = impl.layout[i];
+        if (c.com) {
+            continue;
+        }
+        for (int k = 0; k < c.saved.seats; ++k) {
+            ready[static_cast<std::size_t>(c.newSeat + k)] = mReady[static_cast<std::size_t>(before[i] + k)];
+        }
+        if (c.matched && before[i] != c.newSeat) {
+            for (auto &m : mMembers) {
+                if (m.seat == before[i]) {
+                    m.seat = c.newSeat;
+                }
+            }
+            for (auto &g : impl.guests) {
+                if (g.seat == before[i]) {
+                    g.seat = c.newSeat;
+                    g.out += "WELCOME " + std::to_string(c.newSeat) + " " + std::to_string(people) + " " + std::to_string(mParty) + " "
+                        + std::to_string(g.people) + "\n";
+                }
+            }
+        }
+    }
+    mReady = ready;
+    mPlayers = people;
+    std::sort(mMembers.begin(), mMembers.end(), [](const Member &a, const Member &b) { return a.seat < b.seat; });
+    std::string roster = "ROSTER " + std::to_string(mPlayers) + " " + std::to_string(mParty) + "\n";
+    for (const auto &m : mMembers) {
+        roster += "MEMBER " + std::to_string(m.seat) + " " + m.ip + " " + std::to_string(m.gamePort) + " " + std::to_string(m.seats) + " "
+            + (m.computer.empty() ? std::string("-") : m.computer) + " " + (m.id.empty() ? std::string("-") : m.id) + " " + m.name + "\n";
+    }
+    roster += "END\n";
+    for (auto &g : impl.guests) {
+        if (g.seat > 0) {
+            g.out += roster;
+            Impl::flush(g);
+        }
+    }
+    mReadyDirty = true;
+    mMessage = "Continuing with computer players for " + names + ".";
+    lobby_log("continue: the host chose computer players for %s; the party continues with %d online seats (%d-player party), seat map %s",
+        names.c_str(), mPlayers, mParty, layout_map(impl.layout, impl.saved.players).c_str());
+    for (const auto &c : impl.layout) {
+        lobby_log("continue: saved %s (%s) -> %s %s", seats_label(c.saved.seat, c.saved.seats).c_str(), c.saved.name.c_str(),
+            c.com ? "computer players on ports" : "online", seats_label(c.newSeat, c.saved.seats).c_str());
+    }
+    return true;
+}
+
+std::string Lobby::missingComputers() const
+{
+    std::string names;
+    if (continuing()) {
+        for (const auto &c : mImpl->layout) {
+            if (!c.own && !c.matched && !c.com) {
+                names += (names.empty() ? "" : ", ") + c.saved.name;
+            }
+        }
+    }
+    return names;
+}
+
+bool Lobby::anyComputerBack() const
+{
+    return continuing()
+        && std::any_of(mImpl->layout.begin(), mImpl->layout.end(), [](const ContinueSlot &c) { return !c.own && c.matched; });
+}
+
+std::string Lobby::waitingShort() const
+{
+    // "Valentin's PC · this Mac: 3 controllers, 1 not ready"
+    std::vector<std::string> items;
+    if (continuing()) {
+        for (const auto &c : mImpl->layout) {
+            if (!c.own && !c.matched && !c.com) {
+                items.push_back((c.saved.name.empty() ? std::string("a") : c.saved.name + "'s") + " "
+                    + (c.saved.computer.empty() ? std::string("computer") : c.saved.computer));
+            }
+        }
+    } else if (taken() < mPlayers) {
+        const int missing = mPlayers - taken();
+        items.push_back(std::to_string(missing) + (missing == 1 ? " player to join" : " players to join"));
+    }
+    for (const auto &m : mMembers) {
+        int noController = 0, notReady = 0;
+        for (int s = m.seat; s < m.seat + m.seats && s < kMaxSeats; ++s) {
+            const auto &r = mReady[static_cast<std::size_t>(s)];
+            noController += r.controller ? 0 : 1;
+            notReady += r.controller && !r.ready ? 1 : 0;
+        }
+        if (noController + notReady == 0) {
+            continue;
+        }
+        const bool mine = m.seat == localSeat();
+        std::string who = mine ? std::string("this ") + kComputer : (m.name.empty() ? m.computer : m.name + "'s " + (m.computer.empty() ? "computer" : m.computer));
+        std::string what;
+        if (noController > 0) {
+            what = std::to_string(noController) + (noController == 1 ? " controller" : " controllers");
+        }
+        if (notReady > 0) {
+            what += (what.empty() ? "" : ", ") + std::to_string(notReady) + " not ready";
+        }
+        items.push_back(who + ": " + what);
+    }
+    std::string text;
+    for (const auto &item : items) {
+        text += (text.empty() ? "" : " \xC2\xB7 ") + item;
+    }
+    return text;
+}
+
+void Lobby::startNewPartyInstead()
+{
+    auto &impl = *mImpl;
+    if (!mIsHost || !impl.continuing) {
+        return;
+    }
+    int told = 0;
+    for (auto &g : impl.guests) {
+        if (g.seat > 0 && g.fd != kNoSocket) {
+            g.out += "NEWPARTY\n";
+            Impl::flush(g);
+            ++told;
+        }
+    }
+    lobby_log("continue: the host started a new party instead (the saved party %s stays until the new party's first save); "
+              "%d computer(s) told to join the new one",
+        impl.saved.hash.c_str(), told);
+    leave();
+}
+
+bool Lobby::continuing() const { return mIsHost && mImpl->continuing; }
+
+const SavedParty &Lobby::saved() const { return mImpl->saved; }
+
+const Member *Lobby::savedComputerAt(int seat) const
+{
+    if (!continuing()) {
+        return nullptr;
+    }
+    for (const auto &c : mImpl->layout) {
+        if (!c.own && !c.matched && !c.com && c.newSeat == seat) {
+            return &c.saved;
+        }
+    }
+    return nullptr;
 }
 
 void Lobby::leave()
@@ -1537,6 +2059,16 @@ void Lobby::leave()
     impl.receivingCard = false;
     impl.card.clear();
     impl.goReceived = false;
+    impl.continuing = false;
+    impl.saved = SavedParty {};
+    impl.layout.clear();
+    impl.continueMap.clear();
+    impl.partySave.clear();
+    impl.partySaveHash.clear();
+    impl.partySaveRemaining = 0;
+    impl.receivingPartySave = false;
+    mHostContinues = false;
+    mContinueRound = mContinueRounds = 0;
     mState = State::Idle;
     mMembers.clear();
     mReady = {};
@@ -1597,10 +2129,20 @@ void Lobby::start()
     impl.settings = shared_settings();
     const std::string settingsLine = "SETTINGS " + impl.settings.dump() + "\n";
     const std::string header = "CARD " + (cardName.empty() ? std::string("-") : cardName) + " " + std::to_string(bytes.size()) + "\n";
+    // Continuing: the host's party save, to everyone (docs/ONLINE_CONTINUE.md).
+    std::string partySave;
+    if (impl.continuing) {
+        impl.partySave = impl.saved.bytes;
+        impl.partySaveHash = impl.saved.hash;
+        impl.continueMap = layout_map(impl.layout, impl.saved.players);
+        partySave = "PARTYSAVE " + std::to_string(impl.partySave.size()) + " " + impl.partySaveHash + "\n" + impl.partySave
+            + "CONTINUEMAP " + (impl.continueMap.empty() ? std::string("-") : impl.continueMap) + "\n";
+    }
     int sent = 0;
     for (auto &g : impl.guests) {
         if (g.seat > 0) {
             g.out += settingsLine;
+            g.out += partySave;
             g.out += header;
             g.out += bytes;
             g.out += "GO\n";
@@ -1613,6 +2155,11 @@ void Lobby::start()
     mMessage = "Starting: sending the save to everyone...";
     lobby_log("host: start: sending %s (%zu bytes) and the game settings %s to %d player(s)", cardName.empty() ? "no save" : cardName.c_str(),
         bytes.size(), impl.settings.dump().c_str(), sent);
+    if (impl.continuing) {
+        lobby_log("continue: start: sending the party save %s (%zu bytes) to %d computer(s); every copy continues round %d of %d; seat map %s",
+            impl.partySaveHash.c_str(), impl.partySave.size(), sent, impl.saved.round, impl.saved.rounds,
+            impl.continueMap.empty() ? "none (every seat as saved)" : impl.continueMap.c_str());
+    }
 }
 
 void Lobby::poll()
@@ -1650,6 +2197,9 @@ void Lobby::poll()
                 if (word == "WHO") {
                     g.out += "HOSTING " + std::to_string(mPlayers) + " " + std::to_string(taken()) + " " + impl.name + "\n";
                     g.out += "PARTY " + std::to_string(mParty) + "\n";
+                    if (impl.continuing) {
+                        g.out += continuing_line(impl.saved);
+                    }
                     g.closing = true;
                     lobby_log("host: %s looked for games", g.ip.c_str());
                 } else if (word == "LOBBYVER" && g.seat < 0) {
@@ -1684,6 +2234,8 @@ void Lobby::poll()
                     fields >> people >> computer;
                     g.people = std::clamp(people, 1, kMaxSeats - 1);
                     g.computer = computer == "Mac" || computer == "PC" ? computer : std::string();
+                } else if (word == "COMPUTER" && g.seat < 0) {
+                    g.id = valid_computer_id(rest) ? rest : std::string();
                 } else if (word == "HELLO" && g.seat < 0) {
                     std::istringstream fields(rest);
                     std::string build, disc, guestName;
@@ -1699,7 +2251,8 @@ void Lobby::poll()
                         reject = "Your PartyBoard sent an invalid game port.";
                     } else if (mState != State::Waiting || taken() >= mPlayers) {
                         reject = "That game is full or already starting.";
-                    } else if (taken() + g.people > mPlayers) {
+                    } else if (!impl.continuing && taken() + g.people > mPlayers) {
+                        // (Continuing: the saved party's own check below says it more plainly.)
                         const int left = mPlayers - taken();
                         reject = fmt_people_left(left, g.people, g.computer);
                     } else if (match == BuildMatch::Different) {
@@ -1725,9 +2278,42 @@ void Lobby::poll()
                             guestName.c_str(), g.ip.c_str(), short_hash(build).c_str(), short_hash(impl.build).c_str(),
                             short_hash(impl.simulation).c_str());
                     }
+                    // Continuing a saved party: only its computers, each on its saved seats
+                    // with its saved number of people (docs/ONLINE_CONTINUE.md).
+                    int continueSeat = -1;
+                    if (impl.continuing) {
+                        std::string how;
+                        ContinueSlot *slot = match_saved_computer(impl.layout, g.id, guestName, g.computer, how);
+                        const Member *match = slot != nullptr ? &slot->saved : nullptr;
+                        std::string why;
+                        if (match == nullptr) {
+                            why = "This game continues a saved party, and " + guestName + " (this " + (g.computer.empty() ? "computer" : g.computer)
+                                + ") wasn't in it. Ask the host to start a new party instead, then press Find games again.";
+                        } else if (match->seats != g.people) {
+                            const std::string had = match->seats > 1 ? "players " + std::to_string(match->seat + 1) + "-" + std::to_string(match->seat + match->seats)
+                                                                     : "player " + std::to_string(match->seat + 1);
+                            why = "In the saved party this " + (g.computer.empty() ? std::string("computer") : g.computer) + " had "
+                                + std::to_string(match->seats) + (match->seats == 1 ? " person" : " people") + " (" + had + "); now it says "
+                                + std::to_string(g.people) + ". Set On this computer to " + std::to_string(match->seats)
+                                + " and join again, or ask the host to start a new party.";
+                        }
+                        if (!why.empty()) {
+                            g.out += "REJECT " + why + "\n";
+                            g.closing = true;
+                            mMessage = guestName + " couldn't join: " + why;
+                            lobby_log("continue: turned away %s (%s, %s, computer id %s): %s", guestName.c_str(), g.ip.c_str(),
+                                g.computer.empty() ? "?" : g.computer.c_str(), g.id.empty() ? "none" : g.id.c_str(), why.c_str());
+                            continue;
+                        }
+                        continueSeat = slot->newSeat;
+                        slot->matched = true;
+                        lobby_log("continue: %s (%s, %s) matched %s of the saved party (%s; saved as %s); %s now", guestName.c_str(), g.ip.c_str(),
+                            g.computer.empty() ? "?" : g.computer.c_str(), seats_label(match->seat, match->seats).c_str(), how.c_str(),
+                            match->name.c_str(), seats_label(slot->newSeat, match->seats).c_str());
+                    }
                     // The first free block of consecutive seats big enough for that
                     // computer's people (seats are consecutive per computer).
-                    const int seat = first_free_block(mMembers, mPlayers, g.people);
+                    const int seat = continueSeat >= 0 ? continueSeat : first_free_block(mMembers, mPlayers, g.people);
                     if (seat < 0) {
                         const std::string reason = "That game has no " + std::to_string(g.people)
                             + " places left side by side. Ask the host to start the lobby again.";
@@ -1743,11 +2329,16 @@ void Lobby::poll()
                         mReady[static_cast<std::size_t>(s)] = {};
                     }
                     mReadyDirty = true;
-                    mMembers.push_back(Member {seat, guestName, g.ip, static_cast<std::uint16_t>(port), g.people, g.computer});
+                    mMembers.push_back(Member {seat, guestName, g.ip, static_cast<std::uint16_t>(port), g.people, g.computer, g.id});
                     std::sort(mMembers.begin(), mMembers.end(), [](const Member &a, const Member &b) { return a.seat < b.seat; });
                     g.out += "WELCOME " + std::to_string(seat) + " " + std::to_string(mPlayers) + " " + std::to_string(mParty) + " "
                         + std::to_string(g.people) + "\n";
+                    if (impl.continuing) {
+                        g.out += continuing_line(impl.saved);
+                    }
                     mMessage = guestName + " joined.";
+                    lobby_log("host: %s (%s) has computer id %s", guestName.c_str(), g.ip.c_str(),
+                        g.id.empty() ? "(none sent)" : g.id.c_str());
                     if (g.people == 1) {
                         lobby_log("host: %s (%s, game port %d) joined as player %d; %d of %d", guestName.c_str(), g.ip.c_str(), port,
                             seat + 1, taken(), mPlayers);
@@ -1776,6 +2367,12 @@ void Lobby::poll()
                     if (it != mMembers.end()) {
                         mMessage = it->name + " left.";
                         lobby_log("host: %s (player %d) left", it->name.c_str(), g.seat + 1);
+                        for (auto &c : impl.layout) {
+                            if (c.matched && c.newSeat == g.seat) {
+                                c.matched = false;
+                                lobby_log("continue: waiting for %s again", c.saved.name.c_str());
+                            }
+                        }
                         for (int s = it->seat; s < it->seat + it->seats && s < kMaxSeats; ++s) {
                             mReady[static_cast<std::size_t>(s)] = {};
                         }
@@ -1799,7 +2396,8 @@ void Lobby::poll()
             std::string roster = "ROSTER " + std::to_string(mPlayers) + " " + std::to_string(mParty) + "\n";
             for (const auto &m : mMembers) {
                 roster += "MEMBER " + std::to_string(m.seat) + " " + m.ip + " " + std::to_string(m.gamePort) + " "
-                    + std::to_string(m.seats) + " " + (m.computer.empty() ? std::string("-") : m.computer) + " " + m.name + "\n";
+                    + std::to_string(m.seats) + " " + (m.computer.empty() ? std::string("-") : m.computer) + " "
+                    + (m.id.empty() ? std::string("-") : m.id) + " " + m.name + "\n";
             }
             roster += "END\n";
             for (auto &g : impl.guests) {
@@ -1848,6 +2446,23 @@ void Lobby::poll()
     auto &h = impl.hostLink;
     const bool open = Impl::pump(h, kMaxCardBytes + 4 * kMaxLine);
     for (;;) {
+        if (impl.receivingPartySave) {
+            const std::size_t take = std::min(impl.partySaveRemaining, h.in.size());
+            impl.partySave.append(h.in, 0, take);
+            h.in.erase(0, take);
+            impl.partySaveRemaining -= take;
+            if (impl.partySaveRemaining > 0) {
+                break;
+            }
+            impl.receivingPartySave = false;
+            const std::string actual = party::hash_hex(party::save_hash(impl.partySave.data(), impl.partySave.size()));
+            if (actual != impl.partySaveHash) {
+                lobby_log("join: party save received but its hash is %s, the host said %s", actual.c_str(), impl.partySaveHash.c_str());
+                fail("The host's party save arrived damaged, so the game was not started. Try again.");
+                return;
+            }
+            lobby_log("join: party save received (%zu bytes, hash %s, checked)", impl.partySave.size(), actual.c_str());
+        }
         if (impl.receivingCard) {
             const std::size_t take = std::min(impl.cardRemaining, h.in.size());
             impl.card.insert(impl.card.end(), h.in.begin(), h.in.begin() + static_cast<std::ptrdiff_t>(take));
@@ -1912,6 +2527,43 @@ void Lobby::poll()
                 r.ready = ready != 0 && controller != 0;
                 r.device = device == "-" ? std::string() : device;
             }
+        } else if (word == "CONTINUING") {
+            int board = 0;
+            fields >> mContinueRound >> mContinueRounds >> board;
+            mHostContinues = true;
+            if (mState == State::Waiting) {
+                mMessage = "Joined. The host continues a saved party (round " + std::to_string(mContinueRound) + " of "
+                    + std::to_string(mContinueRounds) + "). Waiting for the host to start.";
+            }
+            lobby_log("join: the host continues a saved party (round %d of %d, board %d)", mContinueRound, mContinueRounds, board + 1);
+        } else if (word == "PARTYSAVE") {
+            long long size = -1;
+            std::string hash;
+            fields >> size >> hash;
+            if (size != static_cast<long long>(party::kSaveBytes) || hash.size() != 16) {
+                fail("The host sent an invalid party save, so the game was not started.");
+                return;
+            }
+            impl.partySave.clear();
+            impl.partySave.reserve(static_cast<std::size_t>(size));
+            impl.partySaveHash = hash;
+            impl.partySaveRemaining = static_cast<std::size_t>(size);
+            impl.receivingPartySave = true;
+            mState = State::Starting;
+            mMessage = "Starting: receiving the host's party save...";
+            lobby_log("join: the host started; receiving its party save %s (%lld bytes)", hash.c_str(), size);
+            continue;
+        } else if (word == "CONTINUEMAP") {
+            impl.continueMap = rest == "-" ? std::string() : rest;
+            if (impl.continueMap.size() > 64) {
+                fail("The host sent invalid lobby data.");
+                return;
+            }
+            lobby_log("join: the continue's seat map: %s", impl.continueMap.empty() ? "none (every seat as saved)" : impl.continueMap.c_str());
+        } else if (word == "NEWPARTY") {
+            lobby_log("join: the host gave up continuing the saved party and hosts a new party instead");
+            fail("The host started a new party instead of continuing. Press Find games and join it.");
+            return;
         } else if (word == "REJECT") {
             lobby_log("join: the host turned this player away");
             fail(rest);
@@ -1930,10 +2582,13 @@ void Lobby::poll()
         } else if (word == "MEMBER") {
             Member m;
             long port = 0;
-            fields >> m.seat >> m.ip >> port >> m.seats >> m.computer;
+            fields >> m.seat >> m.ip >> port >> m.seats >> m.computer >> m.id;
             std::getline(fields >> std::ws, m.name);
             if (m.computer != "Mac" && m.computer != "PC") {
                 m.computer.clear();
+            }
+            if (!valid_computer_id(m.id)) {
+                m.id.clear();
             }
             if (m.seat < 0 || m.seats < 1 || m.seat + m.seats > mPlayers || !valid_ipv4(m.ip) || !valid_port(port)
                 || mMembers.size() >= kMaxSeats) {
@@ -2035,6 +2690,40 @@ void Lobby::launch()
     // The host's game settings over this player's own, in the online copy only.
     apply_shared_settings(online / "config.json", impl.settings);
 
+    // Continuing a saved online party (docs/ONLINE_CONTINUE.md): the host's party
+    // save for the online copy, which checks it against --netplay-continue.
+    const bool continuing = !impl.partySave.empty();
+    fs::remove(online / "online-continue.sav", ec);
+    if (continuing) {
+        std::ofstream out(online / "online-continue.sav", std::ios::binary | std::ios::trunc);
+        out.write(impl.partySave.data(), static_cast<std::streamsize>(impl.partySave.size()));
+        if (!out) {
+            fail("Couldn't write the party save for the online game.");
+            return;
+        }
+        lobby_log("continue: launch: party save %s (%zu bytes) in %s; the online copy continues it", impl.partySaveHash.c_str(),
+            impl.partySave.size(), utf8_text(online / "online-continue.sav").c_str());
+    }
+    // Who had which seats, for the online game's party save (party.json).
+    {
+        nlohmann::json session = nlohmann::json::object();
+        session["version"] = 1;
+        session["party"] = mParty;
+        session["players"] = mPlayers;
+        session["thisSeat"] = mIsHost ? 0 : impl.seat;
+        session["thisSeats"] = impl.people;
+        session["continued"] = continuing;
+        nlohmann::json computers = nlohmann::json::array();
+        for (const auto &m : mMembers) {
+            computers.push_back({{"seat", m.seat}, {"seats", m.seats}, {"name", m.name}, {"computer", m.computer},
+                {"id", m.seat == (mIsHost ? 0 : impl.seat) ? computer_id() : m.id}});
+        }
+        session["computers"] = computers;
+        std::ofstream out(online / "online-session.json", std::ios::trunc);
+        out << session.dump(2);
+    }
+    const fs::path partyDir = real / "Online Party";
+
     // 2. The command line for PartyBoard's direct full-game netplay.
     int mySeat = mIsHost ? 0 : impl.seat;
     // A block "first-last" when a computer has several people (docs/ONLINE_MULTISEAT.md).
@@ -2054,6 +2743,12 @@ void Lobby::launch()
             args.push_back(block(m.seat, m.seats) + ":" + m.ip + ":" + std::to_string(m.gamePort));
         }
     }
+    // Who sits where, by name, for the drop banner ("Waiting for Valentin's PC (Players 5-8)",
+    // docs/ONLINE_DROP_VOTE.md): display only, every copy gets every computer.
+    for (const auto &m : mMembers) {
+        args.push_back("--netplay-name");
+        args.push_back(std::to_string(m.seat) + ":" + m.computer + ":" + m.name);
+    }
     for (const auto &m : mMembers) {
         lobby_log("launch: %s: %s (%s, %s)", m.seats > 1 ? ("players " + std::to_string(m.seat + 1) + "-" + std::to_string(m.seat + m.seats)).c_str()
                                                            : ("player " + std::to_string(m.seat + 1)).c_str(),
@@ -2065,6 +2760,14 @@ void Lobby::launch()
     if (mParty == 8) {
         // The 8-player party: Party Mode plays it with these seats as its people.
         args.push_back("--netplay-party8");
+    }
+    if (continuing) {
+        args.push_back("--netplay-continue");
+        args.push_back(impl.partySaveHash);
+        if (!impl.continueMap.empty()) {
+            args.push_back("--netplay-continue-map");
+            args.push_back(impl.continueMap);
+        }
     }
     // Test aid (the two-computer lobby test): extra game arguments, e.g. the scripted
     // walk, so a lobby-started session can play a whole computer-driven game.
@@ -2096,6 +2799,12 @@ void Lobby::launch()
     }
     std::fprintf(stdout, "%s\n", summary.c_str());
     std::fflush(stdout);
+    // Where the online game keeps its party save: this player's own profile.
+#if defined(_WIN32)
+    _wputenv_s(L"PARTYBOARD_ONLINE_PARTY_DIR", partyDir.wstring().c_str());
+#else
+    setenv("PARTYBOARD_ONLINE_PARTY_DIR", partyDir.c_str(), 1);
+#endif
 #if defined(_WIN32)
     DWORD processId = 0;
     if (!start_online_copy(exe, args, online, impl.discPath, bindIp, processId)) {
@@ -2530,16 +3239,60 @@ int pair_test(int argc, char *argv[])
     if (hosting) {
         const int players = std::atoi(argv[3]);
         const int party = argc >= 5 && std::atoi(argv[4]) == 8 ? 8 : 4;
-        if (!lobby.host(selfIp, players, name, identity, party, people)) {
+        // PARTYBOARD_TAILNET_PAIR_CONTINUE=1: continue this profile's saved online party
+        // (docs/ONLINE_CONTINUE.md); PARTYBOARD_TAILNET_PAIR_NEWPARTY_AFTER=<s>: give up
+        // after s seconds without everyone and host a new party (the players/party above).
+        const char *continueValue = std::getenv("PARTYBOARD_TAILNET_PAIR_CONTINUE");
+        const bool continueParty = continueValue != nullptr && std::strcmp(continueValue, "1") == 0;
+        const char *newPartyValue = std::getenv("PARTYBOARD_TAILNET_PAIR_NEWPARTY_AFTER");
+        const int newPartyAfter = newPartyValue != nullptr ? std::atoi(newPartyValue) : 0;
+        // PARTYBOARD_TAILNET_PAIR_COMPUTERS_AFTER=<s>: after s seconds, continue with computer
+        // players for whoever is missing (needs one other computer back).
+        const char *computersValue = std::getenv("PARTYBOARD_TAILNET_PAIR_COMPUTERS_AFTER");
+        const int computersAfter = computersValue != nullptr ? std::atoi(computersValue) : 0;
+        bool computersDone = false;
+        if (continueParty) {
+            const SavedParty saved = load_saved_party();
+            if (!saved.valid) {
+                say("PAIR FAIL continue: %s", saved.problem.empty() ? "no saved online party" : saved.problem.c_str());
+                return 4;
+            }
+            if (!lobby.hostContinue(selfIp, name, identity, saved)) {
+                say("PAIR FAIL host continue: %s", lobby.message().c_str());
+                return 4;
+            }
+            say("PAIR hosting the saved party %s: %d players (%d-player party), round %d of %d", saved.hash.c_str(), lobby.players(),
+                lobby.party(), saved.round, saved.rounds);
+        } else if (!lobby.host(selfIp, players, name, identity, party, people)) {
             say("PAIR FAIL host: %s", lobby.message().c_str());
             return 4;
         }
         say("PAIR hosting %d players (%d-player party) on %s", lobby.players(), lobby.party(), selfIp.c_str());
         std::size_t seen = 1;
+        std::string lastMessage;
+        const auto began = Clock::now();
         const bool full = wait_for([&] {
-            if (lobby.members().size() != seen) {
+            if (lobby.members().size() != seen || lobby.message() != lastMessage) {
                 seen = lobby.members().size();
+                lastMessage = lobby.message();
                 say("PAIR %zu of %d joined: %s", seen, lobby.players(), lobby.message().c_str());
+            }
+            if (computersAfter > 0 && !computersDone && lobby.continuing() && Clock::now() - began > std::chrono::seconds(computersAfter)
+                && lobby.anyComputerBack()) {
+                computersDone = true;
+                say("PAIR continue: computer players for %s after %d s", lobby.missingComputers().c_str(), computersAfter);
+                lobby.continueWithComputers();
+            }
+            if (newPartyAfter > 0 && lobby.continuing() && Clock::now() - began > std::chrono::seconds(newPartyAfter)) {
+                say("PAIR continue: giving up after %d s (waiting for: %s); hosting a new party instead", newPartyAfter,
+                    lobby.waitingFor().c_str());
+                lobby.startNewPartyInstead();
+                if (!lobby.host(selfIp, players, name, identity, party, people)) {
+                    say("PAIR FAIL host: %s", lobby.message().c_str());
+                    return true;
+                }
+                say("PAIR hosting a new party: %d players (%d-player party)", lobby.players(), lobby.party());
+                seen = 1;
             }
             return lobby.canStart() && lobby.taken() == lobby.players();
         }, 600000, poll);
@@ -2617,6 +3370,7 @@ int relaunch_probe(int argc, char *argv[])
 #else // !PARTYBOARD_TAILNET_SUPPORTED
 
 std::uint16_t local_game_port() { return kGamePort; }
+std::string computer_id() { return {}; }
 Scanner::~Scanner() = default;
 void Scanner::start() {}
 bool Scanner::busy() const { return false; }
@@ -2654,6 +3408,17 @@ void Lobby::start() {}
 void Lobby::poll() {}
 void Lobby::fail(std::string message) { mMessage = std::move(message); mState = State::Failed; }
 void Lobby::launch() {}
+SavedParty load_saved_party() { return {}; }
+const char *board_name(int) { return "a board"; }
+bool Lobby::hostContinue(const std::string &, const std::string &, const Identity &, const SavedParty &) { return false; }
+void Lobby::startNewPartyInstead() {}
+bool Lobby::continuing() const { return false; }
+const SavedParty &Lobby::saved() const { static const SavedParty none; return none; }
+const Member *Lobby::savedComputerAt(int) const { return nullptr; }
+bool Lobby::continueWithComputers() { return false; }
+std::string Lobby::missingComputers() const { return {}; }
+bool Lobby::anyComputerBack() const { return false; }
+std::string Lobby::waitingShort() const { return {}; }
 
 #endif
 

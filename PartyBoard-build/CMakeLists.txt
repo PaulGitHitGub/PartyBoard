@@ -170,7 +170,6 @@ FetchContent_Declare(json
 )
 FetchContent_MakeAvailable(json)
 
-include(cmake/rcheevos.cmake)
 include(cmake/mbedtls.cmake)
 
 set(VERSION 1)
@@ -301,6 +300,20 @@ source_group("Port" FILES ${PORT_FILES})
 
 add_library(dol SHARED ${GAME_FILES} ${PORT_FILES} extern/libco/libco.c)
 
+# The release version players see ("1.1" for "PartyBoard Beta 1.1"). Mac and Windows builds with it
+# check the public latest.json at startup and say on the home screen when a newer release is out
+# (src/port/app_update.cpp). Empty (the default): no check at all. Only that one file sees it, so it
+# changes neither the game code nor the cross-play fingerprint.
+set(PARTYBOARD_RELEASE_VERSION "" CACHE STRING "Release version for the update notice, e.g. 1.1 (empty: never check)")
+if(PARTYBOARD_RELEASE_VERSION)
+    if(NOT PARTYBOARD_RELEASE_VERSION MATCHES "^[0-9]+(\\.[0-9]+)*$")
+        message(FATAL_ERROR "PARTYBOARD_RELEASE_VERSION must be numbers and dots, e.g. 1.1")
+    endif()
+    set_property(SOURCE src/port/app_update.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+        "PARTYBOARD_RELEASE_VERSION=\"${PARTYBOARD_RELEASE_VERSION}\"")
+    message(STATUS "PartyBoard release version ${PARTYBOARD_RELEASE_VERSION}: update notice on")
+endif()
+
 # Nayuki's QR Code generator (MIT, vendored at v1.8.0) for the phone
 # controller's QR code in Settings > Input.
 target_sources(dol PRIVATE extern/qrcodegen/qrcodegen.cpp)
@@ -342,11 +355,11 @@ if (tracy_SOURCE_DIR)
     target_include_directories(dol PRIVATE ${tracy_SOURCE_DIR}/profiler/src)
 endif()
 target_link_libraries(dol PUBLIC aurora::core aurora::card aurora::dvd aurora::gx aurora::mtx aurora::os aurora::si aurora::vi aurora::pad musyx absl::flat_hash_map nlohmann_json::nlohmann_json fmt::fmt rmlui_debugger)
-target_link_libraries(dol PRIVATE rcheevos mbedcrypto)
+target_link_libraries(dol PRIVATE mbedcrypto)
 if (ANDROID)
     target_link_libraries(dol PRIVATE log)  # OSReport goes to logcat (src/port/stubs.c)
 endif ()
-# HTTPS for RetroAchievements, through each platform's own networking stack
+# HTTPS for the update checker, through each platform's own networking stack
 # (include/port/http.hpp). Only the curl backend needs anything from the system;
 # without it the feature is simply unavailable rather than breaking the build.
 if (WIN32)
@@ -370,7 +383,7 @@ elseif (NOT ANDROID)
         target_compile_definitions(dol PRIVATE PARTYBOARD_HAVE_CURL)
         target_link_libraries(dol PRIVATE CURL::libcurl)
     else ()
-        message(WARNING "libcurl not found: RetroAchievements will be unavailable in this build")
+        message(WARNING "libcurl not found: HTTPS update checks will be unavailable in this build")
     endif ()
 endif ()
 if (WIN32)
@@ -900,12 +913,13 @@ endif ()
 # (On the Mac it goes into the app's Contents/Resources by hand, with the
 # launcher script; see "PartyBoard Phone Controller/".)
 if (WIN32)
-    set(PARTYBOARD_PHONE_CONTROLLER_DIR "${CMAKE_SOURCE_DIR}/../PartyBoard Phone Controller")
+    # The 8-player bridge: up to as many phones as the game has players (4 or 8).
+    set(PARTYBOARD_PHONE_CONTROLLER_DIR "${CMAKE_SOURCE_DIR}/../PartyBoard Phone Controller (8 players)")
     if (EXISTS "${PARTYBOARD_PHONE_CONTROLLER_DIR}/bridge.py")
         install(FILES "${PARTYBOARD_PHONE_CONTROLLER_DIR}/bridge.py" "${PARTYBOARD_PHONE_CONTROLLER_DIR}/controller.html"
                 DESTINATION ${CMAKE_INSTALL_PREFIX}/PhoneController)
     else ()
-        message(WARNING "PartyBoard Phone Controller/ not found next to PartyBoard-build: "
+        message(WARNING "PartyBoard Phone Controller (8 players)/ not found next to PartyBoard-build: "
                 "the Windows install will have no phone controller")
     endif ()
 endif ()
@@ -1004,13 +1018,10 @@ foreach (target IN LISTS BINARY_TARGETS)
     endforeach ()
 endforeach ()
 
-# Native online, CubeShelf, screen controller and disc version unit tests. Not part of the default build; CI builds and runs them
+# Native online, screen controller and disc version unit tests. Not part of the default build; CI builds and runs them
 # (cmake --build <dir> --target online_tests, then run each from <dir>/tests).
 add_executable(online_invitation_test EXCLUDE_FROM_ALL tools/tests/online_invitation_test.cpp src/port/online/invitation.cpp)
 target_include_directories(online_invitation_test PRIVATE include)
-add_executable(cubeshelf_social_test EXCLUDE_FROM_ALL tools/tests/cubeshelf_social_test.cpp src/port/online/cubeshelf_social.cpp)
-target_include_directories(cubeshelf_social_test PRIVATE include)
-target_link_libraries(cubeshelf_social_test PRIVATE mbedcrypto nlohmann_json::nlohmann_json)
 add_executable(touch_controls_test EXCLUDE_FROM_ALL tools/tests/touch_controls_test.cpp src/port/touch_controls.cpp)
 target_include_directories(touch_controls_test PRIVATE include extern/aurora/include)
 target_compile_definitions(touch_controls_test PRIVATE TARGET_PC)
@@ -1019,9 +1030,9 @@ target_include_directories(disc_version_test PRIVATE include)
 add_executable(app_update_test EXCLUDE_FROM_ALL tools/tests/app_update_test.cpp src/port/app_update_manifest.cpp)
 target_include_directories(app_update_test PRIVATE include)
 target_link_libraries(app_update_test PRIVATE nlohmann_json::nlohmann_json)
-set_target_properties(online_invitation_test cubeshelf_social_test touch_controls_test disc_version_test app_update_test PROPERTIES
+set_target_properties(online_invitation_test touch_controls_test disc_version_test app_update_test PROPERTIES
         CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
-add_custom_target(online_tests DEPENDS online_invitation_test cubeshelf_social_test touch_controls_test disc_version_test app_update_test)
+add_custom_target(online_tests DEPENDS online_invitation_test touch_controls_test disc_version_test app_update_test)
 
 # Local debugging aid (8-player work): trap out-of-bounds array accesses in the
 # board and board-overlay code only. Off unless -DPB_BOUNDS_BOARD=ON.

@@ -756,6 +756,65 @@ static void SLEightLoad(void)
     SLEightControllersLog();
     fflush(stderr);
 }
+
+#include "port/online_party.h"
+
+/* Continuing an online party (docs/ONLINE_CONTINUE.md): set at online mode select
+   when the party save is loaded, cleared when SLLoadBoard has loaded the board. */
+static BOOL slOnlineBoardPending = FALSE;
+
+BOOL SLOnlinePartyContinuePending(void)
+{
+    return slOnlineBoardPending;
+}
+
+/* After SLLoadBoard in a continue session with another seat layout (another
+   computer hosts, or computer players for a missing computer): each player's
+   controller port is their online seat, so move it to the new seat, and make the
+   missing computer's people computer players. Same map on every copy. */
+static void SLOnlinePartyContinueAdjust(void)
+{
+    const s32 seats = PartyBoard_OnlinePartyContinueMapSeats();
+    const s32 count = GWPlayerCount();
+    s32 i;
+    if (seats <= 0) {
+        fprintf(stdout, "[netplay] continue: the saved seats are used as they are (no seat map)\n");
+        fflush(stdout);
+        return;
+    }
+    for (i = 0; i < count; i++) {
+        PlayerState *p = &GWPlayer[i];
+        s32 com = 0;
+        const s32 oldPort = p->port;
+        const s32 ownPort = GWPlayerOwnPortGet(p);
+        const s32 key = ownPort >= 0 ? ownPort : oldPort;
+        const s32 newSeat = PartyBoard_OnlinePartyContinueSeat(key, &com);
+        if (newSeat < 0) {
+            continue;
+        }
+        /* The board port follows the seat only where it is the player's own port:
+           an 8-player save made between the two groups' minigames keeps the
+           wired slot ports ("now port" = the slot), and those stay as they are. */
+        if (oldPort < seats && (ownPort < 0 || oldPort == ownPort)) {
+            p->port = PartyBoard_OnlinePartyContinueSeat(oldPort, NULL);
+        }
+        if (ownPort >= 0) {
+            GWPlayerPadInfoSet(p, GWPlayerSeatGet(p), newSeat);
+        }
+        if (com && !p->com) {
+            /* Hard, like a player replaced after a drop vote (user's choice, 2026-10-19). */
+            p->com = 1;
+            p->diff = 2;
+        }
+        GWPlayerCfg[i].pad_idx = p->port;
+        GWPlayerCfg[i].iscom = p->com;
+        GWPlayerCfg[i].diff = p->diff;
+        fprintf(stdout, "[netplay] continue: slot %d %s: saved online seat %d -> %s %d (port %d -> %d)%s\n", (int)i + 1,
+            SLEightCharName(p->character), (int)key + 1, com ? "computer player on port" : "online seat", (int)newSeat + 1,
+            (int)oldPort + 1, (int)p->port + 1, com ? ", COM hard" : "");
+    }
+    fflush(stdout);
+}
 #endif
 
 void SLCommonSet(void)
@@ -1028,6 +1087,10 @@ void SLLoadBoard(void)
     }
     else {
         BoardEightResumeClear();
+    }
+    if (slOnlineBoardPending) {
+        slOnlineBoardPending = FALSE;
+        SLOnlinePartyContinueAdjust();
     }
 #endif
 }
@@ -1418,3 +1481,86 @@ s16 SLMessOut(s16 mess)
     HuWinExCleanup(window);
     return choice;
 }
+
+#ifdef TARGET_PC
+/* Online party save (docs/ONLINE_CONTINUE.md). The results screen of an online
+   game makes the offline party save (SaveExec: party_continue = 1, SLSaveBoard,
+   the GameStat), but in memory: the image goes to the "Online Party" folder,
+   never to a memory card, and the save buffer and GameStat are put back at once,
+   so nothing the game (or the online state hash) sees changes and the screen
+   keeps its online timing. Built from game state only, on a 0xFF-filled buffer,
+   with the two local preferences (sound mode, rumble) written as 0: every copy
+   writes the same bytes. */
+void SLOnlinePartySave(void)
+{
+    static SaveBufAll backup;
+    static u8 image[SAVE_BUF_SIZE];
+    GameStat statBackup;
+    char where[200];
+
+    memcpy(&backup, &saveBuf, sizeof(saveBuf));
+    memcpy(&statBackup, &GWGameStat, sizeof(GameStat));
+    memset(saveBuf.buf, 0xFF, SAVE_BUF_SIZE);
+    GWGameStat.party_continue = 1;
+    SLSaveBoard();
+    memcpy(&saveBuf.data.stat, &GWGameStat, sizeof(GameStat));
+    saveBuf.data.stat.sound_mode = 0;
+    saveBuf.data.stat.rumble = 0;
+    byteswap_gamestat(&saveBuf.data.stat);
+    SLEightContinueFlagSave();
+    SLCheckSumSet();
+    memcpy(image, saveBuf.buf, SAVE_BUF_SIZE);
+    if (GWPlayerCount() == 8) {
+        BoardEightResume r;
+        BoardEightResumeGet(&r);
+        SLEightResumeText(&r, where, sizeof(where));
+    }
+    else if (GWSystem.turn >= GWSystem.max_turn) {
+        snprintf(where, sizeof(where), "after the last round's minigame (round %d of %d): continuing goes on to the end of the game",
+            (int)GWSystem.turn, (int)GWSystem.max_turn);
+    }
+    else {
+        snprintf(where, sizeof(where), "after round %d's minigame: continuing starts round %d of %d", (int)GWSystem.turn,
+            (int)GWSystem.turn + 1, (int)GWSystem.max_turn);
+    }
+    memcpy(&saveBuf, &backup, sizeof(saveBuf));
+    memcpy(&GWGameStat, &statBackup, sizeof(GameStat));
+    PartyBoard_OnlinePartyStore(image, SAVE_BUF_SIZE, where);
+}
+
+/* Online mode select (the file select is skipped online): a continue session
+   loads the host's party save the lobby gave every copy, so Party Mode offers
+   the original "continue?" and SLLoadBoard continues it, as offline. Every copy
+   has the same bytes, so every copy decides the same way. Sound mode and rumble
+   stay this player's own. TRUE when Party Mode will offer to continue. */
+BOOL SLOnlinePartyContinueLoad(void)
+{
+    u8 soundMode = GWGameStat.sound_mode;
+    s8 rumble = GWGameStat.rumble;
+    if (!PartyBoard_OnlinePartyContinueSave(saveBuf.buf, SAVE_BUF_SIZE)) {
+        return FALSE;
+    }
+    if (!SLCheckSumCheck()) {
+        fprintf(stdout, "[netplay] continue: WARNING: the party save's checksum is wrong; a new party starts instead\n");
+        fflush(stdout);
+        memset(saveBuf.buf, 0, SAVE_BUF_SIZE);
+        return FALSE;
+    }
+    SLLoadGameStat();
+    GWGameStat.sound_mode = soundMode;
+    GWGameStat.rumble = rumble;
+    {
+        const SystemState *sys = &saveBuf.data.system;
+        SystemState s;
+        memcpy(&s, sys, sizeof(s));
+        byteswap_systemstate(&s);
+        fprintf(stdout, "[netplay] continue: party save loaded at mode select: %s%s, board %d, round %d of %d, continue flag %d; %s\n",
+            s.eight_players ? "8-player " : "", s.team ? "Tag Battle" : "Battle Royale", (int)s.board + 1, (int)s.turn,
+            (int)s.max_turn, (int)GWGameStat.party_continue,
+            GWGameStat.party_continue ? "Party Mode offers to continue it" : "WARNING: it holds no party in progress, so a new party starts");
+        fflush(stdout);
+    }
+    slOnlineBoardPending = GWGameStat.party_continue != 0;
+    return GWGameStat.party_continue != 0;
+}
+#endif

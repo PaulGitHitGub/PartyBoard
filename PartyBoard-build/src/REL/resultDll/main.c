@@ -16,6 +16,9 @@
 #include "game/pad.h"
 #include "game/process.h"
 #include "game/saveload.h"
+#ifdef TARGET_PC
+#include "port/netplay_runtime.h"
+#endif
 #include "game/window.h"
 #include "game/wipe.h"
 
@@ -220,6 +223,14 @@ static void ResultMain(void)
         SaveExec();
     }
     else {
+#ifdef TARGET_PC
+        /* Online the card is never saved (FileSelectAutoLoadDefault); the party
+           save goes to the "Online Party" folder instead, with no change to
+           this screen's timing or the game state (docs/ONLINE_CONTINUE.md). */
+        if (PartyBoard_NetplayEnabled() && GWPartyGet() == 1) {
+            SLOnlinePartySave();
+        }
+#endif
         WipeCreate(WIPE_MODE_OUT, WIPE_TYPE_NORMAL, 60);
         while (WipeStatGet()) {
             HuPrcVSleep();

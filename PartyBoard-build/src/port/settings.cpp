@@ -62,11 +62,10 @@ UserSettings g_userSettings = {
 
         // Preferences
         .pauseOnFocusLost {"game.pauseOnFocusLost", false},
-        .enableAchievementToasts {"game.enableAchievementToasts", true},
         .enableControllerToasts {"game.enableControllerToasts", true},
 
         // Graphics
-        .internalResolutionScale {"game.internalResolutionScale", 0},
+        .internalResolutionScale {"game.internalResolutionScale", 1},
         .shadowResolutionMultiplier {"game.shadowResolutionMultiplier", 1},
         .precompileShaders {"game.precompileShaders", true},
 
@@ -105,11 +104,6 @@ UserSettings g_userSettings = {
         .cardFileType {"backend.cardFileType", static_cast<int>(CARD_RAWIMAGE)},
         .enableAdvancedSettings {"backend.enableAdvancedSettings", false},
     },
-    .retroAchievements = {
-        .enabled {"retroAchievements.enabled", true},
-        .username {"retroAchievements.username", ""},
-        .token {"retroAchievements.token", ""},
-    },
     .online = {
         .nickname {"online.nickname", ""},
     },
@@ -146,7 +140,6 @@ void registerSettings() {
     Register(g_userSettings.game.internalResolutionScale);
     Register(g_userSettings.game.precompileShaders);
     Register(g_userSettings.game.shadowResolutionMultiplier);
-    Register(g_userSettings.game.enableAchievementToasts);
     Register(g_userSettings.game.enableControllerToasts);
     Register(g_userSettings.game.enableTurboKeybind);
     Register(g_userSettings.game.speedrunMode);
@@ -170,9 +163,6 @@ void registerSettings() {
     Register(g_userSettings.backend.cardFileType);
     Register(g_userSettings.backend.enableAdvancedSettings);
 
-    Register(g_userSettings.retroAchievements.enabled);
-    Register(g_userSettings.retroAchievements.username);
-    Register(g_userSettings.retroAchievements.token);
 
     Register(g_userSettings.online.nickname);
 }

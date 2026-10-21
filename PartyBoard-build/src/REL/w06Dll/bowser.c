@@ -27,6 +27,10 @@
 #include "dolphin.h"
 #include <stdlib.h>
 #include <stdio.h>
+#if defined(TARGET_PC) && defined(PARTYBOARD_HD_BETA)
+#include "port/netplay_runtime.h"
+SHARED_SYM extern u32 GlobalCounter;
+#endif
 #include "ext_math.h"
 
 typedef struct {
@@ -531,6 +535,9 @@ static void fn_1_A408(s32 arg0) {
     s32 temp_r28;
     s32 temp_r27;
     s32 i;
+#if defined(TARGET_PC) && defined(PARTYBOARD_HD_BETA)
+    u32 liftStartCounter;
+#endif
 
     BoardPlayerPosGet(arg0, &sp38);
     BoardModelPosGet(lbl_1_data_49A, &sp2C);
@@ -568,6 +575,9 @@ static void fn_1_A408(s32 arg0) {
     HuPrcSleep(55);
     BoardPlayerMotionShiftSet(arg0, 4, 0.0f, 5.0f, HU3D_MOTATTR_NONE);
     HuPrcSleep(5);
+#if defined(TARGET_PC) && defined(PARTYBOARD_HD_BETA)
+    liftStartCounter = GlobalCounter;
+#endif
     temp_r28 = HuAudFXPlay(0x3D);
     BoardPlayerPosGet(arg0, &sp20);
     var_f31 = 0.0f;
@@ -591,10 +601,41 @@ static void fn_1_A408(s32 arg0) {
     while (WipeStatGet() != 0) {
         HuPrcVSleep();
     }
-    if (temp_r28 >= 0) {
-        while (HuAudFXStatusGet(temp_r28) != 0) {
+#if defined(TARGET_PC) && defined(PARTYBOARD_HD_BETA)
+    fprintf(stderr, "[gnarly] lift effect wait begins: handle %d, counter %u\n",
+        (int)temp_r28, (unsigned)GlobalCounter);
+    if (PartyBoard_NetplayEnabled()) {
+        /* FX 0x3D is a one-shot: FX 7 -> macro 104 -> sample 109, no pitch
+           change or loop. Its 55,913 samples at 32 kHz last ceil(n*60/hz)
+           = 105 simulation ticks. Count from the play request, including the
+           rise and wipe above. Device-thread completion (or a failed physical
+           voice allocation) must not decide when the board draws its RNG.
+           GlobalCounter advances only on simulation ticks, including at
+           30 FPS, and stops during an online pause. Unsigned subtraction
+           also keeps the short deadline valid across counter wrap. */
+        fprintf(stderr, "[gnarly] lift effect logical wait: start %u, duration 105, counter %u, handle %d\n",
+            (unsigned)liftStartCounter, (unsigned)GlobalCounter, (int)temp_r28);
+        while ((u32)(GlobalCounter - liftStartCounter) < 105u) {
             HuPrcVSleep();
         }
+        fprintf(stderr, "[gnarly] lift effect logical end: counter %u, elapsed %u\n",
+            (unsigned)GlobalCounter, (unsigned)(GlobalCounter - liftStartCounter));
+    } else
+#endif
+    if (temp_r28 >= 0) {
+#if defined(TARGET_PC) && defined(PARTYBOARD_HD_BETA)
+        s32 liftWaitFrames = 0;
+#endif
+        while (HuAudFXStatusGet(temp_r28) != 0) {
+#if defined(TARGET_PC) && defined(PARTYBOARD_HD_BETA)
+            liftWaitFrames++;
+#endif
+            HuPrcVSleep();
+        }
+#if defined(TARGET_PC) && defined(PARTYBOARD_HD_BETA)
+        fprintf(stderr, "[gnarly] lift effect wait ends: handle %d, slept %d frames, counter %u\n",
+            (int)temp_r28, (int)liftWaitFrames, (unsigned)GlobalCounter);
+#endif
     }
     HuAudFXAllStop();
     BoardAudSeqFadeOutAll();

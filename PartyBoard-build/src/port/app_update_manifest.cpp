@@ -1,9 +1,13 @@
-// The update manifest (android-update.json): parsing and the newer-build test. No platform code,
+// The update manifests (android-update.json, and latest.json for Mac and Windows releases): parsing
+// and the newer-build tests. No platform code,
 // so tools/tests/app_update_test.cpp builds it on its own.
 
 #include "port/app_update.hpp"
 
 #include <nlohmann/json.hpp>
+
+#include <algorithm>
+#include <vector>
 
 namespace partyboard::update {
 namespace {
@@ -61,7 +65,100 @@ namespace {
         return true;
     }
 
+    // The release page: an https link under the release repository, no control characters, spaces,
+    // backslashes or parent directories.
+    bool is_release_page(std::string_view url)
+    {
+        if (!url.starts_with(kReleasePagePrefix) || url.find("..") != std::string_view::npos) {
+            return false;
+        }
+        for (const unsigned char c : url) {
+            if (c <= 0x20 || c == 0x7f || c == '\\' || c == '"' || c == '<' || c == '>') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Splits "1.10.2" into numbers; nothing unless it is digits separated by single dots.
+    std::optional<std::vector<std::uint32_t>> version_parts(std::string_view text)
+    {
+        std::vector<std::uint32_t> parts;
+        std::uint64_t value = 0;
+        std::size_t digits = 0;
+        for (std::size_t i = 0; i <= text.size(); ++i) {
+            if (i == text.size() || text[i] == '.') {
+                if (digits == 0 || parts.size() >= 8) {
+                    return std::nullopt;
+                }
+                parts.push_back(static_cast<std::uint32_t>(value));
+                value = 0;
+                digits = 0;
+            }
+            else if (text[i] >= '0' && text[i] <= '9') {
+                value = value * 10 + static_cast<std::uint64_t>(text[i] - '0');
+                if (++digits > 9) {
+                    return std::nullopt;
+                }
+            }
+            else {
+                return std::nullopt;
+            }
+        }
+        return parts;
+    }
+
 } // namespace
+
+std::optional<int> compare_versions(std::string_view a, std::string_view b)
+{
+    const auto left = version_parts(a);
+    const auto right = version_parts(b);
+    if (!left || !right) {
+        return std::nullopt;
+    }
+    const std::size_t count = std::max(left->size(), right->size());
+    for (std::size_t i = 0; i < count; ++i) {
+        const std::uint32_t l = i < left->size() ? (*left)[i] : 0;
+        const std::uint32_t r = i < right->size() ? (*right)[i] : 0;
+        if (l != r) {
+            return l < r ? -1 : 1;
+        }
+    }
+    return 0;
+}
+
+std::optional<ReleaseManifest> parse_release_manifest(std::string_view text)
+{
+    const json document = json::parse(text.begin(), text.end(), nullptr, false);
+    if (!document.is_object()) {
+        return std::nullopt;
+    }
+    auto version = text_field(document, "version", 32);
+    auto page = text_field(document, "page", kMaxFieldLength);
+    if (!version || !version_parts(*version) || !page || !is_release_page(*page)) {
+        return std::nullopt;
+    }
+    ReleaseManifest manifest;
+    manifest.version = std::move(*version);
+    manifest.page = std::move(*page);
+    // Shown on the home screen: one short line, no line breaks.
+    auto one_line = [](std::string value) {
+        for (char &c : value) {
+            if (static_cast<unsigned char>(c) < 0x20) {
+                c = ' ';
+            }
+        }
+        return value;
+    };
+    manifest.name = one_line(text_field(document, "name", 64).value_or(""));
+    if (manifest.name.empty()) {
+        manifest.name = "PartyBoard " + manifest.version;
+    }
+    manifest.released = one_line(text_field(document, "released", 32).value_or(""));
+    manifest.notes = one_line(text_field(document, "notes", 200).value_or(""));
+    return manifest;
+}
 
 std::optional<Manifest> parse_manifest(std::string_view text)
 {

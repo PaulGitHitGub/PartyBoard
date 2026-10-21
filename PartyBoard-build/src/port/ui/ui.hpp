@@ -50,8 +50,6 @@ struct Toast {
 // // Item disabled ("Off")
 // constexpr u32 kSoundItemDisable = Z2SE_SUBJ_VIEW_OUT;
 //
-// // Achievement unlocked
-// constexpr u32 kSoundAchievementUnlock = Z2SE_NAVI_FLY;
 
 struct Insets {
     float top = 0.0f;
@@ -75,6 +73,8 @@ Document &push_document(std::unique_ptr<Document> doc, bool show = true, bool pa
 void show_top_document() noexcept;
 bool any_document_visible() noexcept;
 bool is_prelaunch_open() noexcept;
+// The F1 menu bar (its tab band across the top of the window) is showing.
+bool menu_bar_open() noexcept;
 Document *top_document() noexcept;
 
 std::filesystem::path resource_path(const std::filesystem::path &filename) noexcept;

@@ -276,8 +276,10 @@ namespace {
             } else {
                 for (const auto &offer : offers) {
                     const bool full = offer.joined >= offer.players;
-                    const std::string label = fmt::format("{}'s game: {} of {} players{}{}", plain_quotes(offer.name), offer.joined,
-                        offer.players, offer.party == 8 ? ", 8-player party" : "", full ? " (full)" : "");
+                    const std::string label = fmt::format("{}'s game: {} of {} players{}{}{}", plain_quotes(offer.name), offer.joined,
+                        offer.players, offer.party == 8 ? ", 8-player party" : "",
+                        offer.continuing ? fmt::format(", continues a saved party (round {} of {})", offer.round, offer.rounds) : std::string(),
+                        full ? " (full)" : "");
                     rml += "<button class=\"online-game\"" + (full ? std::string() : " data-ip=\"" + escape(offer.ip) + "\"")
                         + ">" + escape(label) + "</button>";
                     rml += "<div class=\"online-hint\">" + escape(plain_quotes(offer.device)) + "</div>";
@@ -314,12 +316,18 @@ namespace {
     class LobbyPanel : public NavPanel {
     public:
         LobbyPanel(Rml::Element *parent, tn::Lobby &lobby, std::function<void()> onStart, std::function<void()> onLeave,
-            std::function<void(int)> onToggleReady, std::function<bool()> discFound)
+            std::function<void(int)> onToggleReady, std::function<bool()> discFound, std::function<void()> onNewParty,
+            std::function<void()> onComputers)
             : NavPanel(parent, "data-action",
-                  [onStart = std::move(onStart), onLeave = std::move(onLeave), onToggleReady](Rml::Element *button, bool click) {
+                  [onStart = std::move(onStart), onLeave = std::move(onLeave), onToggleReady,
+                      onNewParty = std::move(onNewParty), onComputers = std::move(onComputers)](Rml::Element *button, bool click) {
                       const auto action = button->GetAttribute<Rml::String>("data-action", "");
                       if (action == "start") {
                           onStart();
+                      } else if (action == "newparty") {
+                          onNewParty();
+                      } else if (action == "computers") {
+                          onComputers();
                       } else if (action == "leave") {
                           onLeave();
                       } else if (action.rfind("ready-", 0) == 0 && click) {
@@ -383,12 +391,25 @@ namespace {
                     rml += "<div class=\"" + std::string(state == State::Failed ? "online-problem" : "online-status") + "\">"
                         + escape(plain_quotes(ui_translate(mLobby.message()))) + "</div>";
                 }
+                // Continuing a saved party (docs/ONLINE_CONTINUE.md): what it is, on both sides.
+                if (mLobby.continuing()) {
+                    const auto &saved = mLobby.saved();
+                    rml += "<div class=\"online-hint\">"
+                        + escape(fmt::format("Saved party: {}, round {} of {}.", tn::board_name(saved.board), saved.round, saved.rounds))
+                        + "</div>";
+                } else if (mLobby.hostContinues()) {
+                    rml += "<div class=\"online-hint\">"
+                        + escape(fmt::format("The host continues a saved party: round {} of {}.", mLobby.continueRound(), mLobby.continueRounds()))
+                        + "</div>";
+                }
                 // One row per computer, in seat order; a computer with several
                 // people shows its block ("Player 1-4") and its kind (Mac or PC).
                 for (int seat = 0; seat < mLobby.players();) {
                     const auto &members = mLobby.members();
                     const auto it = std::find_if(members.begin(), members.end(), [seat](const tn::Member &m) { return m.seat == seat; });
-                    const int seats = it != members.end() ? std::max(1, it->seats) : 1;
+                    // Continuing: an empty block is the saved computer's, named.
+                    const tn::Member *expected = it == members.end() ? mLobby.savedComputerAt(seat) : nullptr;
+                    const int seats = it != members.end() ? std::max(1, it->seats) : expected != nullptr ? std::max(1, expected->seats) : 1;
                     rml += "<div class=\"online-seat\"><span class=\"online-seat-number\">"
                         + (seats > 1 ? fmt::format("Player {}-{}", seat + 1, seat + seats) : fmt::format("Player {}", seat + 1))
                         + "</span>";
@@ -396,6 +417,11 @@ namespace {
                         const std::string where = seats > 1 && !it->computer.empty() ? ", " + it->computer : std::string();
                         rml += "<span>" + escape(plain_quotes(it->name) + where)
                             + (seat == 0 ? escape(ui_translate(" (host)")) : std::string()) + "</span>";
+                    } else if (expected != nullptr) {
+                        rml += "<span class=\"online-hint\">"
+                            + escape("Waiting for " + plain_quotes(expected->name)
+                                + (expected->computer.empty() ? std::string() : ", " + expected->computer))
+                            + "</span>";
                     } else {
                         rml += "<span class=\"online-hint\">" + escape(ui_translate("Waiting for a player")) + "</span>";
                     }
@@ -415,6 +441,18 @@ namespace {
                         rml += mLobby.canStart()
                             ? "<button data-action=\"start\">" + escape(ui_translate("Start game")) + "</button>"
                             : "<button class=\"online-start-off\" disabled>" + escape(ui_translate("Start game")) + "</button>";
+                        if (mLobby.continuing()) {
+                            // A missing computer's people can continue as computer players (needs one other computer back).
+                            const std::string missing = mLobby.missingComputers();
+                            if (!missing.empty() && mLobby.anyComputerBack()) {
+                                rml += "<button data-action=\"computers\">"
+                                    + escape(fmt::format("Use computer players for {}", plain_quotes(missing))) + "</button>";
+                            }
+                            rml += "<button data-action=\"newparty\">" + escape(ui_translate("Start a new party instead")) + "</button>";
+                            rml += "<div class=\"online-hint\">"
+                                + escape(ui_translate("A new party uses the settings on the left and replaces the saved one at its first save."))
+                                + "</div>";
+                        }
                     }
                     rml += ready_check();
                 }
@@ -436,7 +474,8 @@ namespace {
             rml += "<progress class=\"online-ready-bar\" value=\"" + std::to_string(ready) + "\" max=\"" + std::to_string(std::max(1, players))
                 + "\"></progress>";
             if (mLobby.isHost()) {
-                const std::string waiting = mLobby.waitingFor();
+                // Short: who is missing and how many controllers/people aren't ready yet (the log keeps the full list).
+                const std::string waiting = mLobby.waitingShort();
                 rml += "<div class=\"online-hint\">"
                     + escape(waiting.empty() ? std::string("Everyone is ready.") : "Waiting for: " + plain_quotes(waiting)) + "</div>";
             }
@@ -575,6 +614,7 @@ OnlineWindow::OnlineWindow(std::string invitation)
     mLobby = std::make_unique<online::tailnet::Lobby>();
     mScanner->start();
     mIdentity->start(configured_disc_path());
+    mSaved = std::make_unique<online::tailnet::SavedParty>(online::tailnet::load_saved_party());
     mStatus = "Host a game, or find one a friend is hosting on your Tailscale network.";
 #if defined(PARTYBOARD_HD_BETA)
     if (const char *test = std::getenv("PARTYBOARD_TEST_ONLINE"); test != nullptr) {
@@ -591,6 +631,7 @@ OnlineWindow::OnlineWindow(std::string invitation)
             else if (key == "host") mTestHost = value == "1";
             else if (key == "focus") mTestFocus = value;
             else if (key == "join") mTestJoin = value;
+            else if (key == "continue") mTestContinue = value == "1";
         }
         std::fprintf(stdout, "[lobby] TEST preset: %d people here, %d-player party, %d players%s, focus %s\n", mPeople, mParty,
             mPlayers, mTestHost ? ", hosting" : "", mTestFocus.c_str());
@@ -693,11 +734,15 @@ void OnlineWindow::update()
         if (mTestHost && mTestFrames > 60 && mLobby && mLobby->state() == online::tailnet::Lobby::State::Idle && !mScanner->busy()
             && mIdentity->ready()) {
             mTestHost = false;
-            host_tailnet();
+            if (mTestContinue) {
+                continue_tailnet();
+            } else {
+                host_tailnet();
+            }
         }
         if (!mTestFocused && mTestFrames > 90 && !mTestHost && mTestJoin.empty()) {
             Component *row = mTestFocus == "people" ? mPeopleRow : mTestFocus == "players" ? mPlayersRow
-                : mTestFocus == "lobby" ? mLobbyRow : nullptr;
+                : mTestFocus == "lobby" ? mLobbyRow : mTestFocus == "continue" ? mContinueRow : nullptr;
             if (row != nullptr) {
                 row->focus();
             }
@@ -730,7 +775,12 @@ void OnlineWindow::build_tailnet(Rml::Element *content)
                         mLocalReady[static_cast<std::size_t>(k)] ? "marked ready" : "marked not ready");
                 }
             },
-            [this] { return mIdentity && mIdentity->ready(); });
+            [this] { return mIdentity && mIdentity->ready(); }, [this] { new_party_instead(); },
+            [this] {
+                if (mLobby->continueWithComputers()) {
+                    set_status(mLobby->message());
+                }
+            });
     };
 
     leftPane.add_section("You");
@@ -828,6 +878,55 @@ void OnlineWindow::build_tailnet(Rml::Element *content)
             }
         });
     leftPane.register_control(primary(leftPane.add_button("Host a game")).on_pressed([this] { host_tailnet(); }), rightPane, lobbyPanel);
+    // Continuing a saved online party (docs/ONLINE_CONTINUE.md): only when this
+    // computer hosted one that isn't finished.
+    if (mSaved && mSaved->valid) {
+        mContinueRow = &leftPane.register_control(primary(leftPane.add_button("Continue party")).on_pressed([this] { continue_tailnet(); }),
+            rightPane, [this](Pane &pane) {
+                const auto &saved = *mSaved;
+                // "2026-10-19 21:40" -> "Oct 19, 21:40"
+                std::string when = saved.savedAt;
+                if (when.size() == 16) {
+                    static const char *months[12] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+                    const int month = std::atoi(when.substr(5, 2).c_str());
+                    if (month >= 1 && month <= 12) {
+                        when = fmt::format("{} {}, {}", months[month - 1], std::atoi(when.substr(8, 2).c_str()), when.substr(11));
+                    }
+                }
+                pane.add_rml("<div class=\"online-panel\"><div class=\"online-status\">"
+                    + escape(fmt::format("{} - Round {} of {}", online::tailnet::board_name(saved.board), saved.round, saved.rounds))
+                    + "</div><div class=\"online-hint\">"
+                    + escape(fmt::format("{}{}, saved {}", saved.party == 8 ? "8-Player Party, " : "",
+                        saved.mode.empty() ? std::string("Party") : saved.mode, when))
+                    + "</div></div>");
+                std::string rows;
+                for (const auto &c : saved.computers) {
+                    std::string who = plain_quotes(c.name) + (c.computer.empty() ? std::string() : ", " + c.computer);
+                    if (c.seat == saved.thisSeat) {
+                        who += fmt::format(" (this {})", online::tailnet::kComputer);
+                    }
+                    std::string characters;
+                    for (int s = c.seat; s < c.seat + c.seats && s < static_cast<int>(saved.characters.size()); ++s) {
+                        const auto &name = saved.characters[static_cast<std::size_t>(s)];
+                        if (!name.empty()) {
+                            characters += (characters.empty() ? "" : ", ") + name;
+                        }
+                    }
+                    rows += "<div class=\"online-seat\"><span class=\"online-seat-number\">"
+                        + escape(c.seats > 1 ? fmt::format("Player {}-{}", c.seat + 1, c.seat + c.seats) : fmt::format("Player {}", c.seat + 1))
+                        + "</span><span>" + escape(who) + (characters.empty() ? std::string() : "<br/><span class=\"online-hint\">" + escape(characters) + "</span>")
+                        + "</span></div>";
+                }
+                if (saved.party == 8 && saved.players < 8) {
+                    rows += "<div class=\"online-hint\">"
+                        + escape(saved.players == 7 ? std::string("Player 8: computer player")
+                                                    : fmt::format("Players {} to 8: computer players", saved.players + 1))
+                        + "</div>";
+                }
+                pane.add_rml("<div class=\"online-panel\">" + rows + "</div>");
+                pane.add_text("Everyone rejoins from the same computer, with the same number of people.");
+            });
+    }
 
     leftPane.add_section("Join a game");
     leftPane.register_control(primary(leftPane.add_button("Find games")).on_pressed([this] { mScanner->start(); }), rightPane,
@@ -887,6 +986,50 @@ void OnlineWindow::host_tailnet()
         set_status(mParty == 8 ? fmt::format("Hosting an 8-Player Party for {} people. Friends can now press Find games.", mPlayers)
                                : fmt::format("Hosting a {}-player game. Friends can now press Find games.", mPlayers));
     }
+}
+
+void OnlineWindow::continue_tailnet()
+{
+    if (!mSaved || !mSaved->valid) {
+        set_status("There is no saved online party to continue.");
+        return;
+    }
+    if (mLobby->state() != online::tailnet::Lobby::State::Idle && mLobby->state() != online::tailnet::Lobby::State::Failed) {
+        set_status("You're already in a lobby. Leave it first.");
+        return;
+    }
+    mIdentity->start(configured_disc_path());
+    if (mIdentity->failed()) {
+        set_status(mIdentity->error());
+        return;
+    }
+    if (!mIdentity->ready()) {
+        set_status("Checking your game files. Try again in a few seconds.");
+        return;
+    }
+    if (mScanner->busy()) {
+        set_status("Still connecting to Tailscale. Try again in a moment.");
+        return;
+    }
+    if (mScanner->selfIp().empty()) {
+        set_status(mScanner->error().empty() ? std::string("This ") + online::tailnet::kComputer + " isn't connected to Tailscale."
+                                             : mScanner->error());
+        mScanner->start();
+        return;
+    }
+    if (mLobby->hostContinue(mScanner->selfIp(), nickname(), *mIdentity, *mSaved)) {
+        set_status("Continuing the saved party. The same computers can now press Find games and join.");
+        // The lobby (who is back, the ready check, Start) is the Lobby row's panel.
+        if (mLobbyRow != nullptr) {
+            mLobbyRow->focus();
+        }
+    }
+}
+
+void OnlineWindow::new_party_instead()
+{
+    mLobby->startNewPartyInstead();
+    host_tailnet();
 }
 
 void OnlineWindow::join_tailnet(const std::string &ip)
